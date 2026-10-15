@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, "..");
 function setup() {
   const loads = [];
   const scope = {
-    Zotero: { debug() {} },
+    Zotero: { debug() {}, logError() {} },
     Services: { appShell: { hiddenDOMWindow: { atob } }, scriptloader: { loadSubScript(filename, target) {
       loads.push(filename);
       vm.runInNewContext(fs.readFileSync(filename, "utf8"), target);
@@ -201,20 +201,93 @@ test("translation-only mode hides source text while preserving figures, formulas
 });
 
 
-test("toolbar context menu offers the three reader display modes", async () => {
-  const { doc, plugin } = setup();
-  const contentDoc = new JSDOM("<!doctype html><html><body><div class=\"zotero-bilingual-card\">译文</div></body></html>").window.document;
+function setupToolbar(translated = true) {
+  const state = setup();
+  const { doc, plugin } = state;
+  doc.body.innerHTML = '<div class="toolbar"><button id="native-reading-mode" class="active">阅读模式</button><div class="end"><button class="toolbar-button find">搜索</button></div></div>';
+  const contentDoc = new JSDOM('<!doctype html><html><body><p>English paragraph<img id="figure"></p>' + (translated ? '<div class="zotero-bilingual-card">译文</div>' : '') + '</body></html>').window.document;
+  const reader = { _iframeWindow: { document: doc } };
   plugin.getRealContentDoc = () => contentDoc;
+  plugin.injectToolbarButton(reader, doc);
+  return { ...state, contentDoc, reader, select: doc.getElementById("zrb-display-mode") };
+}
 
-  plugin.showButtonContextMenu({ clientX: 20, clientY: 20 }, {}, doc);
-
-  const select = doc.getElementById("zrb-display-mode");
-  assert.ok(select);
+test("toolbar directly exposes a native three-state dropdown without a context menu", async () => {
+  const { doc, plugin, contentDoc, reader, select } = setupToolbar();
+  const nativeButton = doc.getElementById("native-reading-mode");
+  assert.equal(select.tagName, "SELECT", "an ordinary left click opens the native options");
+  assert.equal(select.getAttribute("aria-label"), "显示内容");
   assert.deepEqual(Array.from(select.options).map((option) => option.textContent), ["原文", "对照", "仅译文"]);
   assert.equal(select.value, "bilingual");
+  assert.equal(select.nextElementSibling, doc.querySelector(".find"));
+  assert.equal(doc.getElementById("zrb-button-context-menu"), null);
 
-  select.value = "original";
-  select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
-  await new Promise(setImmediate);
+  for (const mode of ["original", "translation", "bilingual"]) {
+    select.click();
+    select.value = mode;
+    select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
+    await new Promise(setImmediate);
+    assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, mode);
+    assert.equal(select.value, mode);
+    assert.equal(contentDoc.querySelector(".zotero-bilingual-card").classList.contains("zotero-bilingual-hidden"), mode === "original");
+  }
+  assert.equal(nativeButton.className, "active", "Zotero's reading-mode switch stays enabled");
+  assert.equal(nativeButton.textContent, "阅读模式");
+  plugin.injectToolbarButton(reader, doc);
+  assert.equal(doc.querySelectorAll("#zrb-display-mode").length, 1);
+  assert.equal(doc.getElementById("zrb-display-mode"), select);
+});
+
+test("the visible dropdown follows keyboard visibility changes and replaces stale controls", async () => {
+  const { doc, plugin, reader, select } = setupToolbar();
+  await plugin.toggleVisibility(reader);
+  assert.equal(select.value, "original");
+  await plugin.toggleVisibility(reader);
+  assert.equal(select.value, "bilingual");
+
+  select.dataset.zrbSession = "old-session";
+  const legacy = doc.createElement("button");
+  legacy.id = "zotero-reading-bilingual-btn";
+  legacy.textContent = "隐藏译文";
+  doc.querySelector(".end").appendChild(legacy);
+  plugin.injectToolbarButton(reader, doc);
+  assert.equal(doc.getElementById("zotero-reading-bilingual-btn"), null);
+  assert.notEqual(doc.getElementById("zrb-display-mode"), select);
+  assert.equal(doc.querySelectorAll("#zrb-display-mode").length, 1);
+  assert.equal(doc.getElementById("zrb-display-mode").value, "bilingual");
+});
+
+test("translated selections start translation once and preserve later display changes", async () => {
+  const { doc, plugin, contentDoc, reader, select } = setupToolbar(false);
+  let finish;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  let calls = 0;
+  plugin.translateActiveReader = async () => {
+    calls++;
+    await pending;
+    const card = contentDoc.createElement("div");
+    card.className = "zotero-bilingual-card";
+    card.textContent = "译文";
+    contentDoc.body.appendChild(card);
+  };
+  assert.equal(select.value, "original");
+  const first = plugin.setReaderDisplayMode(reader, "translation");
+  const second = plugin.setReaderDisplayMode(reader, "bilingual");
+  assert.equal(calls, 1);
+  assert.equal(select.value, "bilingual");
+  await plugin.setReaderDisplayMode(reader, "original");
+  finish();
+  assert.equal(await first, true);
+  assert.equal(await second, true);
+  assert.equal(select.value, "original", "finishing a translation must not replace the user's latest selection");
   assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, "original");
+  assert.equal(plugin._displayModeTranslations.has(reader), false);
+});
+
+test("a translation that produces no cards restores the actual visible state", async () => {
+  const { plugin, reader, select, contentDoc } = setupToolbar(false);
+  plugin.translateActiveReader = async () => {};
+  assert.equal(await plugin.setReaderDisplayMode(reader, "translation"), false);
+  assert.equal(select.value, "original");
+  assert.equal(contentDoc.documentElement.classList.contains("zrb-translation-only"), false);
 });
