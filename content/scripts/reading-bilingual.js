@@ -1706,6 +1706,11 @@ var ReadingBilingual = {
     const style = doc.createElement("style");
     style.id = "zotero-reading-bilingual-btn-style";
     style.textContent = `
+      .reading-bilingual-toolbar-select, .reading-bilingual-toolbar-select *,
+      .zrb-display-mode-menu, .zrb-display-mode-menu * {
+        -moz-window-dragging: no-drag !important;
+        pointer-events: auto !important;
+      }
       .reading-bilingual-toolbar-select {
         appearance: none !important;
         width: auto !important;
@@ -1772,7 +1777,7 @@ var ReadingBilingual = {
     button.type = "button";
     button.id = "zrb-display-mode";
     button.dataset.zrbSession = this.sessionId;
-    button.className = "reading-bilingual-toolbar-select";
+    button.className = "toolbar-button reading-bilingual-toolbar-select";
     button.setAttribute("aria-label", "显示内容");
     button.setAttribute("aria-haspopup", "listbox");
     button.setAttribute("aria-expanded", "false");
@@ -1797,9 +1802,9 @@ var ReadingBilingual = {
     const closeMenu = () => {
       menu.hidden = true;
       button.setAttribute("aria-expanded", "false");
-      doc.removeEventListener("mousedown", outsidePress, true);
+      doc.removeEventListener("pointerdown", outsidePress, true);
       doc.removeEventListener("keydown", escapeKey, true);
-      outsideContentDoc?.removeEventListener("mousedown", closeMenu, true);
+      outsideContentDoc?.removeEventListener("pointerdown", closeMenu, true);
       outsideContentDoc = null;
       doc.defaultView?.removeEventListener("resize", closeMenu);
     };
@@ -1821,10 +1826,10 @@ var ReadingBilingual = {
       menu.style.top = (rect.bottom + 4) + "px";
       menu.hidden = false;
       button.setAttribute("aria-expanded", "true");
-      doc.addEventListener("mousedown", outsidePress, true);
+      doc.addEventListener("pointerdown", outsidePress, true);
       doc.addEventListener("keydown", escapeKey, true);
       outsideContentDoc = this.getRealContentDoc(reader);
-      if (outsideContentDoc !== doc) outsideContentDoc?.addEventListener("mousedown", closeMenu, true);
+      if (outsideContentDoc !== doc) outsideContentDoc?.addEventListener("pointerdown", closeMenu, true);
       doc.defaultView?.addEventListener("resize", closeMenu);
       if (focusOption) (options.find((option) => option.dataset.mode === button.value) || options[0])?.focus();
     };
@@ -1869,19 +1874,14 @@ var ReadingBilingual = {
       menu.appendChild(option);
     }
 
-    // Open on the first mouse press, even if the reader iframe first needs
-    // focus. The following click must not toggle the same menu a second time.
-    button.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      toggleMenu();
-    });
+    // Zotero's FocusManager cancels pointerdown for toolbar buttons. Browsers
+    // then suppress mousedown, but still deliver click (including detail=1).
+    // Use that single activation event for both mouse and keyboard input.
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      // Keyboard and accessibility activation has no preceding mouse press.
-      if (event.detail === 0) toggleMenu(true);
+      button.focus();
+      toggleMenu(true);
     });
     button.addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {

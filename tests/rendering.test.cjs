@@ -208,14 +208,19 @@ function setupToolbar(translated = true) {
   const contentDoc = new JSDOM('<!doctype html><html><body><p>English paragraph<img id="figure"></p>' + (translated ? '<div class="zotero-bilingual-card">译文</div>' : '') + '</body></html>').window.document;
   const reader = { _iframeWindow: { document: doc } };
   plugin.getRealContentDoc = () => contentDoc;
+  // Zotero cancels pointerdown; the browser consequently omits mousedown.
+  doc.defaultView.addEventListener("pointerdown", (event) => event.preventDefault());
   plugin.injectToolbarButton(reader, doc);
   return { ...state, contentDoc, reader, select: doc.getElementById("zrb-display-mode") };
 }
 
 function mouseClick(doc, element) {
-  for (const type of ["mousedown", "mouseup", "click"]) {
-    element.dispatchEvent(new doc.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail: 1 }));
-  }
+  const send = (type) => element.dispatchEvent(new doc.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+  const compatibilityMouseEvents = send("pointerdown");
+  if (compatibilityMouseEvents) send("mousedown");
+  send("pointerup");
+  if (compatibilityMouseEvents) send("mouseup");
+  send("click");
 }
 
 test("the first single mouse click opens three choices and selecting one changes the display", async () => {
