@@ -153,3 +153,68 @@ test("a pending card renders the completed result without leaking rendered text 
   assert.equal(content.querySelectorAll(".katex").length, 0);
   assert.equal(renderer.getSource(content), "[翻译失败: 错误]");
 });
+
+
+test("translation-only mode hides source text while preserving figures, formulas and code", () => {
+  const { doc, plugin } = setup();
+  doc.body.innerHTML = `
+    <p id="source">English paragraph<img id="photo" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="><svg id="chart" viewBox="0 0 10 10"><text>Chart label</text></svg><span class="sdt-math">x + 1</span><code>value = 1</code></p>
+    <table id="plain-table"><tbody><tr><td>Table label</td></tr></tbody></table>
+    <table id="chart-table"><tbody><tr><td>Series<svg viewBox="0 0 10 10"><text>Series A</text></svg></td></tr></tbody></table>
+    <div class="zotero-bilingual-card"><span class="zrb-card-content">中文译文</span></div>
+  `;
+  const source = doc.getElementById("source");
+  const plainTable = doc.getElementById("plain-table");
+  const chartTable = doc.getElementById("chart-table");
+
+  plugin.markSourceForTranslationOnly(source);
+  plugin.markSourceForTranslationOnly(source);
+  plugin.markSourceForTranslationOnly(plainTable);
+  plugin.markSourceForTranslationOnly(chartTable);
+  const style = doc.createElement("style");
+  style.textContent = plugin.getGeneratedCSS();
+  doc.head.appendChild(style);
+
+  assert.equal(source.querySelectorAll(".zrb-original-text").length, 1, "source marking is idempotent");
+
+  plugin.applyReaderDisplayMode(doc, "original");
+  assert.equal(doc.documentElement.dataset.zrbDisplayMode, "original");
+  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
+  assert.equal(doc.defaultView.getComputedStyle(doc.querySelector(".zrb-card-content").parentElement).display, "none");
+  assert.notEqual(doc.defaultView.getComputedStyle(plainTable).display, "none");
+
+  plugin.applyReaderDisplayMode(doc, "bilingual");
+  assert.equal(doc.documentElement.dataset.zrbDisplayMode, "bilingual");
+  assert.notEqual(doc.defaultView.getComputedStyle(doc.querySelector(".zrb-card-content").parentElement).display, "none");
+  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
+
+  plugin.applyReaderDisplayMode(doc, "translation");
+  assert.equal(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
+  assert.equal(doc.defaultView.getComputedStyle(plainTable).display, "none", "translated text tables can be replaced by their Chinese card");
+  assert.notEqual(doc.defaultView.getComputedStyle(chartTable).display, "none", "a table containing a chart remains visible");
+  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector("img")).display, "none");
+  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector("svg")).display, "none");
+  assert.equal(source.querySelector(".sdt-math").textContent, "x + 1");
+  assert.equal(source.querySelector("code").textContent, "value = 1");
+  assert.equal(doc.querySelector(".zrb-card-content").textContent, "中文译文");
+  assert.ok(source.textContent.includes("English paragraph"), "original text remains in the DOM for restoration and retranslation");
+});
+
+
+test("toolbar context menu offers the three reader display modes", async () => {
+  const { doc, plugin } = setup();
+  const contentDoc = new JSDOM("<!doctype html><html><body><div class=\"zotero-bilingual-card\">译文</div></body></html>").window.document;
+  plugin.getRealContentDoc = () => contentDoc;
+
+  plugin.showButtonContextMenu({ clientX: 20, clientY: 20 }, {}, doc);
+
+  const select = doc.getElementById("zrb-display-mode");
+  assert.ok(select);
+  assert.deepEqual(Array.from(select.options).map((option) => option.textContent), ["原文", "对照", "仅译文"]);
+  assert.equal(select.value, "bilingual");
+
+  select.value = "original";
+  select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
+  await new Promise(setImmediate);
+  assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, "original");
+});
