@@ -171,13 +171,24 @@ test("translation-only mode hides source text while preserving figures, formulas
   plugin.markSourceForTranslationOnly(source);
   plugin.markSourceForTranslationOnly(plainTable);
   plugin.markSourceForTranslationOnly(chartTable);
-  plugin.setTranslationOnlyMode(doc, true);
-
   const style = doc.createElement("style");
   style.textContent = plugin.getGeneratedCSS();
   doc.head.appendChild(style);
 
   assert.equal(source.querySelectorAll(".zrb-original-text").length, 1, "source marking is idempotent");
+
+  plugin.applyReaderDisplayMode(doc, "original");
+  assert.equal(doc.documentElement.dataset.zrbDisplayMode, "original");
+  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
+  assert.equal(doc.defaultView.getComputedStyle(doc.querySelector(".zrb-card-content").parentElement).display, "none");
+  assert.notEqual(doc.defaultView.getComputedStyle(plainTable).display, "none");
+
+  plugin.applyReaderDisplayMode(doc, "bilingual");
+  assert.equal(doc.documentElement.dataset.zrbDisplayMode, "bilingual");
+  assert.notEqual(doc.defaultView.getComputedStyle(doc.querySelector(".zrb-card-content").parentElement).display, "none");
+  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
+
+  plugin.applyReaderDisplayMode(doc, "translation");
   assert.equal(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
   assert.equal(doc.defaultView.getComputedStyle(plainTable).display, "none", "translated text tables can be replaced by their Chinese card");
   assert.notEqual(doc.defaultView.getComputedStyle(chartTable).display, "none", "a table containing a chart remains visible");
@@ -187,7 +198,23 @@ test("translation-only mode hides source text while preserving figures, formulas
   assert.equal(source.querySelector("code").textContent, "value = 1");
   assert.equal(doc.querySelector(".zrb-card-content").textContent, "中文译文");
   assert.ok(source.textContent.includes("English paragraph"), "original text remains in the DOM for restoration and retranslation");
+});
 
-  plugin.setTranslationOnlyMode(doc, false);
-  assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector(".zrb-original-text")).display, "none");
+
+test("toolbar context menu offers the three reader display modes", async () => {
+  const { doc, plugin } = setup();
+  const contentDoc = new JSDOM("<!doctype html><html><body><div class=\"zotero-bilingual-card\">译文</div></body></html>").window.document;
+  plugin.getRealContentDoc = () => contentDoc;
+
+  plugin.showButtonContextMenu({ clientX: 20, clientY: 20 }, {}, doc);
+
+  const select = doc.getElementById("zrb-display-mode");
+  assert.ok(select);
+  assert.deepEqual(Array.from(select.options).map((option) => option.textContent), ["原文", "对照", "仅译文"]);
+  assert.equal(select.value, "bilingual");
+
+  select.value = "original";
+  select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
+  await new Promise(setImmediate);
+  assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, "original");
 });
