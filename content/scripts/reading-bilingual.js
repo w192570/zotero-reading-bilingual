@@ -6,6 +6,7 @@ var ReadingBilingual = {
   rootURI: null,
   addedElementIDs: [],
   windowListeners: new Map(),
+  _toolsMenuListeners: new Map(),
   observedDocs: new WeakSet(),
   // Re-evaluated on every load of this script, so anything left in a reader
   // tab by a previous load can be told apart from what this load injected
@@ -1539,9 +1540,7 @@ var ReadingBilingual = {
           try {
             const doc = reader._iframeWindow?.document || reader._iframe?.contentDocument;
             if (!doc) continue;
-            doc.getElementById("zotero-reading-bilingual-btn")?.remove();
-            doc.getElementById("zrb-display-mode")?.remove();
-            doc.getElementById("zrb-button-context-menu")?.remove();
+            this.removeToolbarDisplayControls(doc);
             const style = doc.getElementById("zotero-reading-bilingual-btn-style");
             if (style) style.remove();
             const contentDoc = this.getRealContentDoc(reader);
@@ -1581,6 +1580,39 @@ var ReadingBilingual = {
       this.addedElementIDs.push(toggleItem.id);
     }
 
+    if (toolsPopup && !doc.getElementById("reading-bilingual-tools-translation-only")) {
+      const item = doc.createXULElement("menuitem");
+      item.id = "reading-bilingual-tools-translation-only";
+      item.setAttribute("label", "仅显示译文（保留图表）");
+      item.setAttribute("type", "checkbox");
+      item.setAttribute("autocheck", "false");
+      const updateChecked = () => {
+        const reader = this.getActiveReader(win);
+        const contentDoc = reader && this.getRealContentDoc(reader);
+        if (this.getReaderDisplayMode(contentDoc) === "translation") item.setAttribute("checked", "true");
+        else item.removeAttribute("checked");
+        if (contentDoc) item.removeAttribute("disabled");
+        else item.setAttribute("disabled", "true");
+      };
+      item.addEventListener("command", async () => {
+        try {
+          await this.toggleTranslationOnlyMode(null, win);
+        } catch (error) {
+          Zotero.logError(error);
+        } finally {
+          updateChecked();
+        }
+      });
+      const popupHandler = (event) => {
+        if (event.target === toolsPopup) updateChecked();
+      };
+      toolsPopup.addEventListener("popupshowing", popupHandler);
+      this._toolsMenuListeners.set(win, { popup: toolsPopup, handler: popupHandler });
+      toolsPopup.appendChild(item);
+      this.addedElementIDs.push(item.id);
+      updateChecked();
+    }
+
     const itemMenu = doc.getElementById("zotero-itemmenu");
     if (itemMenu && !doc.getElementById("reading-bilingual-item-translate")) {
       const contextItem = doc.createXULElement("menuitem");
@@ -1597,6 +1629,9 @@ var ReadingBilingual = {
   removeMenus(win) {
     const doc = win.document;
     if (!doc) return;
+    const listener = this._toolsMenuListeners.get(win);
+    if (listener) listener.popup.removeEventListener("popupshowing", listener.handler);
+    this._toolsMenuListeners.delete(win);
     for (let id of this.addedElementIDs) {
       const el = doc.getElementById(id);
       if (el) el.remove();
@@ -1639,20 +1674,22 @@ var ReadingBilingual = {
     }
   },
 
+  removeToolbarDisplayControls(doc) {
+    for (const id of ["zotero-reading-bilingual-fab", "zotero-reading-bilingual-btn", "zrb-button-context-menu", "zrb-display-mode", "zrb-display-mode-menu"]) {
+      const control = doc.getElementById(id);
+      control?._zrbCloseMenu?.();
+      control?.remove();
+    }
+  },
+
   injectToolbarButton(reader, doc) {
     if (!doc) return;
-
-    // Remove controls from older versions, including handlers bound to an
-    // unloaded plugin. Zotero's own reading-mode button is untouched.
-    doc.getElementById("zotero-reading-bilingual-fab")?.remove();
-    doc.getElementById("zotero-reading-bilingual-btn")?.remove();
-    doc.getElementById("zrb-button-context-menu")?.remove();
     const existing = doc.getElementById("zrb-display-mode");
     if (existing?.dataset.zrbSession === this.sessionId) {
       this.syncToolbarDisplayMode(reader, doc);
       return;
     }
-    existing?.remove();
+    this.removeToolbarDisplayControls(doc);
     doc.getElementById("zotero-reading-bilingual-btn-style")?.remove();
 
     const findBtn =
@@ -1670,12 +1707,15 @@ var ReadingBilingual = {
     style.id = "zotero-reading-bilingual-btn-style";
     style.textContent = `
       .reading-bilingual-toolbar-select {
-        appearance: auto !important;
+        appearance: none !important;
         width: auto !important;
         min-width: 88px !important;
         height: 28px !important;
-        padding: 0 7px !important;
-        display: inline-block !important;
+        padding: 0 8px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 12px !important;
         border: 1px solid var(--fill-quaternary, rgba(0, 0, 0, 0.18)) !important;
         border-radius: 5px !important;
         background-color: var(--material-toolbar, transparent) !important;
@@ -1692,54 +1732,183 @@ var ReadingBilingual = {
       }
       .reading-bilingual-toolbar-select.translating { color: #d97706 !important; }
       .reading-bilingual-toolbar-select.error { color: #dc2626 !important; }
-      .reading-bilingual-toolbar-select option {
-        background-color: Canvas;
-        color: CanvasText;
+      .zrb-display-mode-menu {
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        min-width: 110px;
+        padding: 4px;
+        border: 1px solid var(--fill-quaternary, rgba(0, 0, 0, 0.18));
+        border-radius: 6px;
+        background: var(--material-menu, Canvas);
+        color: var(--fill-primary, CanvasText);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+        font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       }
+      .zrb-display-mode-menu[hidden] { display: none !important; }
+      .zrb-display-mode-option {
+        appearance: none !important;
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        min-height: 28px;
+        padding: 5px 8px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .zrb-display-mode-option:hover, .zrb-display-mode-option:focus-visible {
+        background: rgba(99, 102, 241, 0.12);
+      }
+      .zrb-display-mode-option[aria-selected="true"]::after { content: "✓"; }
     `;
     (doc.head || doc.body).appendChild(style);
 
-    // A native select opens with an ordinary left click. Its label always
-    // describes the current display state, including while translating.
-    const select = doc.createElement("select");
-    select.id = "zrb-display-mode";
-    select.dataset.zrbSession = this.sessionId;
-    select.className = "reading-bilingual-toolbar-select";
-    select.setAttribute("aria-label", "显示内容");
-    select.title = "显示内容：左键选择原文、对照或仅译文";
-    for (const [value, label] of [
-      ["original", "原文"],
-      ["bilingual", "对照"],
-      ["translation", "仅译文"],
-    ]) {
-      const option = doc.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      select.appendChild(option);
-    }
-    select.addEventListener("click", (event) => event.stopPropagation());
-    select.addEventListener("change", async (event) => {
-      event.stopPropagation();
-      try {
-        await this.setReaderDisplayMode(reader, select.value);
-      } catch (error) {
-        Zotero.logError(error);
-      } finally {
-        this.syncToolbarDisplayMode(reader, doc);
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.id = "zrb-display-mode";
+    button.dataset.zrbSession = this.sessionId;
+    button.className = "reading-bilingual-toolbar-select";
+    button.setAttribute("aria-label", "显示内容");
+    button.setAttribute("aria-haspopup", "listbox");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", "zrb-display-mode-menu");
+    button.title = "显示内容：单击选择原文、对照或仅译文";
+    const label = doc.createElement("span");
+    label.className = "zrb-display-mode-label";
+    button.appendChild(label);
+    const arrow = doc.createElement("span");
+    arrow.textContent = "▾";
+    arrow.setAttribute("aria-hidden", "true");
+    button.appendChild(arrow);
+
+    const menu = doc.createElement("div");
+    menu.id = "zrb-display-mode-menu";
+    menu.className = "zrb-display-mode-menu";
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", "显示内容");
+    menu.hidden = true;
+    const options = [];
+    let outsideContentDoc = null;
+    const closeMenu = () => {
+      menu.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      doc.removeEventListener("mousedown", outsidePress, true);
+      doc.removeEventListener("keydown", escapeKey, true);
+      outsideContentDoc?.removeEventListener("mousedown", closeMenu, true);
+      outsideContentDoc = null;
+      doc.defaultView?.removeEventListener("resize", closeMenu);
+    };
+    const outsidePress = (event) => {
+      if (!button.contains(event.target) && !menu.contains(event.target)) closeMenu();
+    };
+    const escapeKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu();
+        button.focus();
       }
+    };
+    const openMenu = (focusOption = false) => {
+      this.syncToolbarDisplayMode(reader, doc);
+      const rect = button.getBoundingClientRect();
+      menu.style.left = Math.max(4, Math.min(rect.left, (doc.defaultView?.innerWidth || 800) - 130)) + "px";
+      menu.style.top = (rect.bottom + 4) + "px";
+      menu.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      doc.addEventListener("mousedown", outsidePress, true);
+      doc.addEventListener("keydown", escapeKey, true);
+      outsideContentDoc = this.getRealContentDoc(reader);
+      if (outsideContentDoc !== doc) outsideContentDoc?.addEventListener("mousedown", closeMenu, true);
+      doc.defaultView?.addEventListener("resize", closeMenu);
+      if (focusOption) (options.find((option) => option.dataset.mode === button.value) || options[0])?.focus();
+    };
+    const toggleMenu = (focusOption = false) => menu.hidden ? openMenu(focusOption) : closeMenu();
+    button._zrbCloseMenu = closeMenu;
+    menu._zrbCloseMenu = closeMenu;
+
+    for (const [value, text] of [["original", "原文"], ["bilingual", "对照"], ["translation", "仅译文"]]) {
+      const option = doc.createElement("button");
+      option.type = "button";
+      option.className = "zrb-display-mode-option";
+      option.dataset.mode = value;
+      option.setAttribute("role", "option");
+      option.textContent = text;
+      option.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu();
+        button.focus();
+        try {
+          await this.setReaderDisplayMode(reader, value);
+        } catch (error) {
+          Zotero.logError(error);
+        } finally {
+          this.syncToolbarDisplayMode(reader, doc);
+        }
+      });
+      option.addEventListener("keydown", (event) => {
+        const index = options.indexOf(option);
+        let next;
+        if (event.key === "ArrowDown") next = (index + 1) % options.length;
+        else if (event.key === "ArrowUp") next = (index + options.length - 1) % options.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = options.length - 1;
+        if (next !== undefined) {
+          event.preventDefault();
+          event.stopPropagation();
+          options[next].focus();
+        } else if (event.key === "Tab") closeMenu();
+      });
+      options.push(option);
+      menu.appendChild(option);
+    }
+
+    // Open on the first mouse press, even if the reader iframe first needs
+    // focus. The following click must not toggle the same menu a second time.
+    button.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleMenu();
     });
-    if (findBtn?.parentNode) findBtn.parentNode.insertBefore(select, findBtn);
-    else toolbarEnd.appendChild(select);
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // Keyboard and accessibility activation has no preceding mouse press.
+      if (event.detail === 0) toggleMenu(true);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        openMenu(true);
+      } else if (event.key === "Tab") closeMenu();
+    });
+    if (findBtn?.parentNode) findBtn.parentNode.insertBefore(button, findBtn);
+    else toolbarEnd.appendChild(button);
+    doc.body.appendChild(menu);
     this.syncToolbarDisplayMode(reader, doc);
   },
 
   syncToolbarDisplayMode(reader, toolbarDoc = null) {
     const doc = toolbarDoc || reader?._iframeWindow?.document || reader?._iframe?.contentDocument;
-    const select = doc?.getElementById("zrb-display-mode");
-    if (!select) return;
+    const button = doc?.getElementById("zrb-display-mode");
+    if (!button) return;
     const mode = this.getReaderDisplayMode(this.getRealContentDoc(reader));
-    if (select.value !== mode) select.value = mode;
-    select.classList.toggle("active", mode !== "original");
+    const text = { original: "原文", bilingual: "对照", translation: "仅译文" }[mode];
+    const label = button.querySelector(".zrb-display-mode-label");
+    if (label && label.textContent !== text) label.textContent = text;
+    if (button.value !== mode) button.value = mode;
+    button.classList.toggle("active", mode !== "original");
+    doc.getElementById("zrb-display-mode-menu")?.querySelectorAll("[data-mode]").forEach((option) => {
+      option.setAttribute("aria-selected", String(option.dataset.mode === mode));
+    });
   },
 
   // Watch for Zotero 10 SDT Reading Mode entering
@@ -3452,7 +3621,7 @@ var ReadingBilingual = {
         btn.classList.add("success", "active");
       }
       this.syncToolbarDisplayMode(reader);
-      if (btn) btn.title = "显示内容：左键选择原文、对照或仅译文";
+      if (btn) btn.title = "显示内容：单击选择原文、对照或仅译文";
 
       setTimeout(() => {
         if (btn) btn.classList.remove("success");

@@ -212,30 +212,70 @@ function setupToolbar(translated = true) {
   return { ...state, contentDoc, reader, select: doc.getElementById("zrb-display-mode") };
 }
 
-test("toolbar directly exposes a native three-state dropdown without a context menu", async () => {
+function mouseClick(doc, element) {
+  for (const type of ["mousedown", "mouseup", "click"]) {
+    element.dispatchEvent(new doc.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+  }
+}
+
+test("the first single mouse click opens three choices and selecting one changes the display", async () => {
   const { doc, plugin, contentDoc, reader, select } = setupToolbar();
   const nativeButton = doc.getElementById("native-reading-mode");
-  assert.equal(select.tagName, "SELECT", "an ordinary left click opens the native options");
+  const menu = doc.getElementById("zrb-display-mode-menu");
+  assert.equal(select.tagName, "BUTTON");
   assert.equal(select.getAttribute("aria-label"), "显示内容");
-  assert.deepEqual(Array.from(select.options).map((option) => option.textContent), ["原文", "对照", "仅译文"]);
+  assert.equal(menu.hidden, true);
+  assert.deepEqual(Array.from(menu.children).map((option) => option.textContent), ["原文", "对照", "仅译文"]);
   assert.equal(select.value, "bilingual");
   assert.equal(select.nextElementSibling, doc.querySelector(".find"));
   assert.equal(doc.getElementById("zrb-button-context-menu"), null);
 
+  // Start with focus elsewhere: one complete mouse click must leave it open.
+  nativeButton.focus();
+  mouseClick(doc, select);
+  assert.equal(menu.hidden, false);
+  assert.equal(select.getAttribute("aria-expanded"), "true");
   for (const mode of ["original", "translation", "bilingual"]) {
-    select.click();
-    select.value = mode;
-    select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
+    if (menu.hidden) mouseClick(doc, select);
+    mouseClick(doc, menu.querySelector(`[data-mode="${mode}"]`));
     await new Promise(setImmediate);
+    assert.equal(menu.hidden, true);
+    assert.equal(select.getAttribute("aria-expanded"), "false");
     assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, mode);
     assert.equal(select.value, mode);
+    assert.equal(select.querySelector(".zrb-display-mode-label").textContent, {original:"原文", bilingual:"对照", translation:"仅译文"}[mode]);
+    assert.equal(menu.querySelector(`[data-mode="${mode}"]`).getAttribute("aria-selected"), "true");
     assert.equal(contentDoc.querySelector(".zotero-bilingual-card").classList.contains("zotero-bilingual-hidden"), mode === "original");
   }
   assert.equal(nativeButton.className, "active", "Zotero's reading-mode switch stays enabled");
   assert.equal(nativeButton.textContent, "阅读模式");
   plugin.injectToolbarButton(reader, doc);
   assert.equal(doc.querySelectorAll("#zrb-display-mode").length, 1);
+  assert.equal(doc.querySelectorAll("#zrb-display-mode-menu").length, 1);
   assert.equal(doc.getElementById("zrb-display-mode"), select);
+});
+
+test("the dropdown closes on a second click, outside click or Escape and supports keyboard activation", () => {
+  const { doc, contentDoc, select } = setupToolbar();
+  const menu = doc.getElementById("zrb-display-mode-menu");
+  mouseClick(doc, select);
+  mouseClick(doc, select);
+  assert.equal(menu.hidden, true);
+  mouseClick(doc, select);
+  mouseClick(doc, doc.body);
+  assert.equal(menu.hidden, true);
+  mouseClick(doc, select);
+  mouseClick(contentDoc, contentDoc.body);
+  assert.equal(menu.hidden, true, "a click in the nested reading document closes the popup too");
+
+  select.click(); // Keyboard/accessibility click has detail 0.
+  assert.equal(menu.hidden, false);
+  assert.equal(doc.activeElement.dataset.mode, "bilingual");
+  doc.activeElement.dispatchEvent(new doc.defaultView.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+  assert.equal(doc.activeElement.dataset.mode, "translation");
+  doc.activeElement.dispatchEvent(new doc.defaultView.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.equal(menu.hidden, true);
+  assert.equal(doc.activeElement, select);
 });
 
 test("the visible dropdown follows keyboard visibility changes and replaces stale controls", async () => {
@@ -245,6 +285,8 @@ test("the visible dropdown follows keyboard visibility changes and replaces stal
   await plugin.toggleVisibility(reader);
   assert.equal(select.value, "bilingual");
 
+  mouseClick(doc, select);
+  const oldMenu = doc.getElementById("zrb-display-mode-menu");
   select.dataset.zrbSession = "old-session";
   const legacy = doc.createElement("button");
   legacy.id = "zotero-reading-bilingual-btn";
@@ -253,7 +295,9 @@ test("the visible dropdown follows keyboard visibility changes and replaces stal
   plugin.injectToolbarButton(reader, doc);
   assert.equal(doc.getElementById("zotero-reading-bilingual-btn"), null);
   assert.notEqual(doc.getElementById("zrb-display-mode"), select);
+  assert.equal(oldMenu.isConnected, false);
   assert.equal(doc.querySelectorAll("#zrb-display-mode").length, 1);
+  assert.equal(doc.querySelectorAll("#zrb-display-mode-menu").length, 1);
   assert.equal(doc.getElementById("zrb-display-mode").value, "bilingual");
 });
 
@@ -290,4 +334,40 @@ test("a translation that produces no cards restores the actual visible state", a
   assert.equal(await plugin.setReaderDisplayMode(reader, "translation"), false);
   assert.equal(select.value, "original");
   assert.equal(contentDoc.documentElement.classList.contains("zrb-translation-only"), false);
+});
+
+
+test("Tools menu toggles translation-only and keeps its checkmark and toolbar in sync", async () => {
+  const { doc, plugin, reader, contentDoc, select } = setupToolbar();
+  const popup = doc.createElement("menupopup");
+  popup.id = "menu_ToolsPopup";
+  doc.body.appendChild(popup);
+  doc.createXULElement = (tag) => doc.createElement(tag);
+  plugin.getActiveReader = () => reader;
+  const win = { document: doc };
+  plugin.injectMenus(win);
+  plugin.injectMenus(win);
+  const item = doc.getElementById("reading-bilingual-tools-translation-only");
+  assert.equal(item.getAttribute("label"), "仅显示译文（保留图表）");
+  assert.equal(item.getAttribute("type"), "checkbox");
+  assert.equal(doc.querySelectorAll("#reading-bilingual-tools-translation-only").length, 1);
+  assert.equal(item.hasAttribute("checked"), false);
+  for (const mode of ["translation", "bilingual"]) {
+    item.dispatchEvent(new doc.defaultView.Event("command"));
+    await new Promise(setImmediate);
+    assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, mode);
+    assert.equal(select.value, mode);
+    assert.equal(item.hasAttribute("checked"), mode === "translation");
+    assert.ok(contentDoc.getElementById("figure"));
+  }
+  await plugin.setReaderDisplayMode(reader, "translation");
+  popup.dispatchEvent(new doc.defaultView.Event("popupshowing"));
+  assert.equal(item.getAttribute("checked"), "true");
+  plugin.getActiveReader = () => null;
+  popup.dispatchEvent(new doc.defaultView.Event("popupshowing"));
+  assert.equal(item.getAttribute("disabled"), "true");
+  assert.equal(item.hasAttribute("checked"), false);
+  plugin.removeMenus(win);
+  assert.equal(doc.getElementById(item.id), null);
+  assert.equal(plugin._toolsMenuListeners.has(win), false);
 });
