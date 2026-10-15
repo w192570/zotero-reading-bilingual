@@ -155,13 +155,14 @@ test("a pending card renders the completed result without leaking rendered text 
 });
 
 
-test("translation-only mode hides source text while preserving figures, formulas and code", () => {
+test("translation-only mode hides source text while preserving figures, formulas and code blocks", () => {
   const { doc, plugin } = setup();
   doc.body.innerHTML = `
     <p id="source">English paragraph<img id="photo" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="><svg id="chart" viewBox="0 0 10 10"><text>Chart label</text></svg><span class="sdt-math">x + 1</span><code>value = 1</code></p>
     <table id="plain-table"><tbody><tr><td>Table label</td></tr></tbody></table>
     <table id="chart-table"><tbody><tr><td>Series<svg viewBox="0 0 10 10"><text>Series A</text></svg></td></tr></tbody></table>
     <div class="zotero-bilingual-card"><span class="zrb-card-content">中文译文</span></div>
+    <pre id="code-block"><code>value = 1</code></pre>
   `;
   const source = doc.getElementById("source");
   const plainTable = doc.getElementById("plain-table");
@@ -175,7 +176,7 @@ test("translation-only mode hides source text while preserving figures, formulas
   style.textContent = plugin.getGeneratedCSS();
   doc.head.appendChild(style);
 
-  assert.equal(source.querySelectorAll(".zrb-original-text").length, 1, "source marking is idempotent");
+  assert.equal(source.querySelectorAll(".zrb-original-text").length, 2, "prose and inline code are marked once");
 
   plugin.applyReaderDisplayMode(doc, "original");
   assert.equal(doc.documentElement.dataset.zrbDisplayMode, "original");
@@ -196,6 +197,8 @@ test("translation-only mode hides source text while preserving figures, formulas
   assert.notEqual(doc.defaultView.getComputedStyle(source.querySelector("svg")).display, "none");
   assert.equal(source.querySelector(".sdt-math").textContent, "x + 1");
   assert.equal(source.querySelector("code").textContent, "value = 1");
+  assert.equal(doc.defaultView.getComputedStyle(source.querySelector("code .zrb-original-text")).display, "none");
+  assert.notEqual(doc.defaultView.getComputedStyle(doc.getElementById("code-block")).display, "none");
   assert.equal(doc.querySelector(".zrb-card-content").textContent, "中文译文");
   assert.ok(source.textContent.includes("English paragraph"), "original text remains in the DOM for restoration and retranslation");
 });
@@ -375,4 +378,49 @@ test("Tools menu toggles translation-only and keeps its checkmark and toolbar in
   plugin.removeMenus(win);
   assert.equal(doc.getElementById(item.id), null);
   assert.equal(plugin._toolsMenuListeners.has(win), false);
+});
+
+test("translation-only hides inline ligature glyphs and aria-hidden prose without deleting real code or math", () => {
+  const { doc, plugin } = setup();
+  doc.body.innerHTML = `
+    <p id="ligatures">scienti<code id="glyph">fi</code>c findings <span aria-hidden="true" id="decorative">fi</span> <code><em>ffi</em></code></p>
+    <div class="zotero-bilingual-card">科学结果与合法变量 fi</div>
+    <p id="mixed">Original formula <math id="equation"><mi>fi</mi><mo>+</mo><mn>1</mn></math><img id="figure"><code id="mixed-glyph">fi</code></p>
+    <div class="zotero-bilingual-card">公式与图像</div>
+    <pre id="program"><code>const fi = 1;</code></pre>
+    <table id="glyph-table"><tbody><tr><td>coef<code>fi</code>cient</td></tr></tbody></table>
+    <div class="zotero-bilingual-card">系数</div>
+  `;
+  const style = doc.createElement("style");
+  style.textContent = plugin.getGeneratedCSS();
+  doc.head.appendChild(style);
+  const source = doc.getElementById("ligatures");
+  const original = source.textContent;
+  // Upgrade a document partly wrapped by version 1.6.8. A boolean marker
+  // must not permanently exempt the previously skipped glyph nodes.
+  for (const oldText of Array.from(source.childNodes).filter((node) => node.nodeType === 3)) {
+    const oldWrapper = doc.createElement("span");
+    oldWrapper.className = "zrb-original-text";
+    source.insertBefore(oldWrapper, oldText);
+    oldWrapper.appendChild(oldText);
+  }
+  source.dataset.zrbTranslationOnlyPrepared = "true";
+  plugin.applyReaderDisplayMode(doc, "translation");
+  for (const id of ["glyph", "decorative", "mixed-glyph"]) {
+    const element = doc.getElementById(id);
+    const wrapper = element.querySelector(".zrb-original-text");
+    assert.ok(wrapper, `${id} must follow the visibility of source prose`);
+    assert.equal(doc.defaultView.getComputedStyle(wrapper).display, "none");
+  }
+  assert.equal(doc.defaultView.getComputedStyle(doc.getElementById("glyph-table")).display, "none");
+  assert.equal(doc.getElementById("program").textContent, "const fi = 1;");
+  assert.equal(doc.getElementById("program").querySelector(".zrb-original-text"), null);
+  assert.equal(doc.getElementById("equation").querySelector(".zrb-original-text"), null);
+  assert.ok(doc.getElementById("figure"));
+  assert.equal(source.textContent, original, "source content is retained for restoration");
+  plugin.applyReaderDisplayMode(doc, "bilingual");
+  assert.notEqual(doc.defaultView.getComputedStyle(doc.querySelector("#glyph .zrb-original-text")).display, "none");
+  assert.equal(source.textContent, original);
+  plugin.applyReaderDisplayMode(doc, "translation");
+  assert.equal(source.querySelectorAll(".zrb-original-text .zrb-original-text").length, 0);
 });

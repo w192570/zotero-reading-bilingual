@@ -987,7 +987,7 @@ var ReadingBilingual = {
         display: none !important;
       }
       /* Translation-only mode hides source text nodes while leaving figures,
-         chart SVGs, images, math and code visible. */
+         chart SVGs, images, math and code blocks visible. */
       .zrb-translation-only .zrb-original-text {
         display: none !important;
       }
@@ -2374,14 +2374,16 @@ var ReadingBilingual = {
   },
 
   // Wrap source text separately so translation-only mode can hide it
-  // without removing PDF figures, chart graphics, formulas, or code.
+  // without removing PDF figures, chart graphics, formulas, or code blocks.
+  // Inline <code> also represents monospace PDF glyphs (including ligatures),
+  // so it follows the prose instead of being treated as a standalone asset.
   markSourceForTranslationOnly(sourceEl) {
-    if (!sourceEl || sourceEl.nodeType !== 1 || sourceEl.dataset?.zrbTranslationOnlyPrepared === "true") return;
+    if (!sourceEl || sourceEl.nodeType !== 1 || sourceEl.dataset?.zrbTranslationOnlyPrepared === "2") return;
     const doc = sourceEl.ownerDocument;
     if (!doc || typeof doc.createTreeWalker !== "function") return;
 
     const tagName = sourceEl.tagName?.toLowerCase();
-    if (tagName === "table" && !sourceEl.querySelector("img, svg, canvas, video, figure, [role='img'], math, .sdt-math, .katex, .MathJax, pre, code")) {
+    if (tagName === "table" && !sourceEl.querySelector("img, svg, canvas, video, figure, [role='img'], math, .sdt-math, .katex, .MathJax, pre")) {
       sourceEl.classList.add("zrb-source-table");
     }
 
@@ -2392,7 +2394,7 @@ var ReadingBilingual = {
       if (!node.nodeValue || !node.nodeValue.trim()) continue;
       const parent = node.parentElement;
       if (!parent || parent.closest(
-        ".zrb-original-text, .zotero-bilingual-card, script, style, textarea, input, button, pre, code, svg, canvas, video, audio, iframe, object, embed, math, .sdt-math, .katex, .MathJax, [role='math'], [aria-hidden='true']"
+        ".zrb-original-text, .zotero-bilingual-card, script, style, textarea, input, button, pre, svg, canvas, video, audio, iframe, object, embed, math, .sdt-math, .katex, .MathJax, [role='math']"
       )) continue;
       textNodes.push(node);
     }
@@ -2403,7 +2405,9 @@ var ReadingBilingual = {
       node.parentNode.insertBefore(span, node);
       span.appendChild(node);
     }
-    sourceEl.dataset.zrbTranslationOnlyPrepared = "true";
+    // Revisit documents prepared by older versions. Existing wrappers are
+    // skipped above, so upgrading does not nest spans or discard source text.
+    sourceEl.dataset.zrbTranslationOnlyPrepared = "2";
   },
 
   prepareTranslationOnlySources(doc) {

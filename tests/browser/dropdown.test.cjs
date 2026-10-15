@@ -129,3 +129,30 @@ test('Firefox keyboard navigation selects a state and Escape closes the list', a
   assert.equal(await menu.isVisible(), false);
   assert.equal(await button.getAttribute('aria-expanded'), 'false');
 });
+
+test('translation-only removes inline fi glyph fragments and restores prose with figures and formulas intact', async t => {
+  const { page, paper, button, menu, errors } = await fixture(t);
+  await page.evaluate(() => {
+    const doc = ReadingBilingual.getRealContentDoc(testReader);
+    doc.body.innerHTML = `
+      <p id="ligatures" data-zrb-translation-only-prepared="true"><span class="zrb-original-text">scienti</span><code id="glyph">fi</code><span class="zrb-original-text">c findings </span><span aria-hidden="true">fi</span><code><em>ffi</em></code></p>
+      <div class="zotero-bilingual-card" id="translation">科学结果，变量 <code>fi</code> 保留在译文中</div>
+      <p id="mixed">Original formula <math id="equation"><mi>fi</mi><mo>+</mo><mn>1</mn></math><img id="figure" width="40" height="20" alt="figure" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2220%22%3E%3Crect width=%2240%22 height=%2220%22 fill=%22blue%22/%3E%3C/svg%3E"><code id="mixed-glyph">fi</code></p>
+      <div class="zotero-bilingual-card">公式与图像</div>
+      <pre id="program"><code>const fi = 1;</code></pre>`;
+    window.ligatureOriginal = doc.getElementById('ligatures').textContent;
+  });
+  await button.click();
+  await menu.locator('[data-mode="translation"]').click();
+  assert.equal((await paper.locator('#ligatures').innerText()).trim(), '', 'no loose fi fragments should remain above the translation');
+  assert.equal(await paper.locator('#mixed-glyph').isVisible(), false);
+  assert.equal(await paper.locator('#figure').isVisible(), true);
+  assert.equal(await paper.locator('#equation').isVisible(), true);
+  assert.equal(await paper.locator('#program').innerText(), 'const fi = 1;');
+  assert.equal(await paper.locator('#translation code').isVisible(), true, 'literal fi inside the translation is valid content');
+  await button.click();
+  await menu.locator('[data-mode="bilingual"]').click();
+  assert.equal(await paper.locator('#ligatures').textContent(), await page.evaluate(() => ligatureOriginal));
+  assert.equal(await paper.locator('#glyph').isVisible(), true);
+  assert.deepEqual(errors, []);
+});
