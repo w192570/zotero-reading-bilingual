@@ -24,7 +24,7 @@ async function fixture(t, cancelPointerDown = true) {
     #paper { width:100%; height:440px; border:0; }
   </style></head><body><div class="toolbar"><button id="reading-mode" class="toolbar-button active">阅读模式</button><div class="end"><button class="toolbar-button find">搜索</button></div></div><iframe id="paper"></iframe></body></html>`);
   const paper = await frame.locator('#paper').elementHandle().then(handle => handle.contentFrame());
-  await paper.setContent('<!doctype html><html><body><p id="source">English source<img id="figure" alt="figure" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2220%22%3E%3Crect width=%2240%22 height=%2220%22 fill=%22blue%22/%3E%3C/svg%3E"></p><div class="zotero-bilingual-card"><div class="zrb-card-content">中文译文</div></div></body></html>');
+  await paper.setContent('<!doctype html><html><body><figure class="sdt-image" data-ref-path="0.1"><img id="figure" alt="figure" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2220%22%3E%3Crect width=%2240%22 height=%2220%22 fill=%22blue%22/%3E%3C/svg%3E"></figure><p id="source">English source</p><div class="zotero-bilingual-card"><div class="zrb-card-content">中文译文</div></div></body></html>');
   await page.addScriptTag({ path: path.join(root, 'content/scripts/reading-bilingual.js') });
   await page.evaluate(cancelPointerDown => {
     window.loggedErrors = [];
@@ -45,113 +45,80 @@ async function fixture(t, cancelPointerDown = true) {
     });
     window.clickEvents = [];
     for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
-      doc.addEventListener(type, event => {
-        if (event.target.closest('#zrb-display-mode')) clickEvents.push({ type, detail: event.detail });
-      }, true);
+      doc.defaultView.addEventListener(type, event => {
+        if (event.target.closest('#zrb-display-mode')) clickEvents.push({ type, detail: event.detail, defaultPrevented: event.defaultPrevented });
+      });
     }
     ReadingBilingual.injectToolbarButton(testReader, doc);
   }, cancelPointerDown);
-  return { page, frame, paper, errors, button: frame.locator('#zrb-display-mode'), menu: frame.locator('#zrb-display-mode-menu') };
+  return { page, frame, paper, errors, select: frame.locator('#zrb-display-mode') };
 }
 
-test('a real Firefox single click opens the choices when Zotero cancels pointerdown', async t => {
-  const { page, frame, button, menu, errors } = await fixture(t);
+test('one real Firefox click opens the native dropdown despite Zotero toolbar drag styling', async t => {
+  const { page, frame, select, errors } = await fixture(t);
   await page.locator('#host-focus').click();
-  await button.click();
+  await select.click();
   const events = await page.evaluate(() => clickEvents);
   assert.ok(events.some(event => event.type === 'click' && event.detail === 1), JSON.stringify(events));
-  assert.ok(!events.some(event => event.type === 'mousedown'), 'the fixture must reproduce cancelled compatibility mouse events');
-  assert.equal(await menu.isVisible(), true, `Single click did not open the menu. Events: ${JSON.stringify(events)}`);
-  assert.equal(await button.getAttribute('aria-expanded'), 'true');
+  assert.ok(events.some(event => event.type === 'pointerdown' && !event.defaultPrevented), `Zotero should leave native select input enabled: ${JSON.stringify(events)}`);
+  assert.ok(events.some(event => event.type === 'mousedown'), `Native select should retain compatibility mouse events: ${JSON.stringify(events)}`);
+  // Firefox keeps its native option popup outside the iframe DOM. Target the
+  // select directly for keyboard input, as Zotero's toolbar does.
+  await select.press('ArrowDown');
+  await select.press('Enter');
+  assert.equal(await select.inputValue(), 'translation', 'one click followed by a native option choice selects the next state');
+  assert.equal(await select.locator('option:checked').textContent(), '仅译文');
   assert.equal(await frame.locator('#reading-mode').getAttribute('class'), 'toolbar-button active');
   assert.deepEqual(errors, []);
 });
 
-
-test('a mouse click toggles once when compatibility mousedown is allowed too', async t => {
-  const { page, button, menu } = await fixture(t, false);
-  await button.click();
-  assert.equal(await menu.isVisible(), true);
-  await button.click();
-  assert.equal(await menu.isVisible(), false);
-  const events = await page.evaluate(() => clickEvents);
-  assert.equal(events.filter(event => event.type === 'mousedown').length, 2);
-  assert.equal(events.filter(event => event.type === 'click').length, 2);
-});
-
-test('real clicks on text and arrow open once, switch all states and preserve figures', async t => {
-  const { page, frame, paper, button, menu, errors } = await fixture(t);
+test('native dropdown selection switches all states and preserves present graphics', async t => {
+  const { page, frame, paper, select, errors } = await fixture(t);
   for (const [value, label] of [['translation', '仅译文'], ['original', '原文'], ['bilingual', '对照']]) {
-    await page.locator('#host-focus').click();
-    await button.locator(value === 'original' ? '[aria-hidden="true"]' : '.zrb-display-mode-label').click();
-    assert.equal(await menu.isVisible(), true);
-    await menu.locator(`[data-mode="${value}"]`).click();
-    assert.equal(await button.evaluate(element => element.value), value);
-    assert.equal(await button.locator('.zrb-display-mode-label').textContent(), label);
-    assert.equal(await menu.isVisible(), false);
+    await select.selectOption(value);
+    assert.equal(await select.inputValue(), value);
+    assert.equal(await select.locator('option:checked').textContent(), label);
     assert.equal(await paper.locator('html').getAttribute('data-zrb-display-mode'), value);
     assert.equal(await paper.locator('.zotero-bilingual-card').isVisible(), value !== 'original');
     assert.equal(await paper.locator('#figure').isVisible(), true);
     assert.equal(await paper.locator('.zrb-original-text').isVisible(), value !== 'translation');
   }
-  for (let i = 0; i < 5; i++) {
-    await button.click();
-    assert.equal(await menu.isVisible(), true);
-    await button.click();
-    assert.equal(await menu.isVisible(), false);
-  }
+  assert.equal(await frame.locator('#zrb-display-mode-menu').count(), 0, 'no clipped HTML popup is used');
   assert.equal(await frame.locator('#reading-mode').getAttribute('class'), 'toolbar-button active');
   assert.deepEqual(errors, []);
   assert.deepEqual(await page.evaluate(() => loggedErrors), []);
 });
 
-test('real pointer presses outside the menu and in the paper dismiss it', async t => {
-  const { frame, paper, button, menu } = await fixture(t);
-  await button.click();
-  await frame.locator('.find').click();
-  assert.equal(await menu.isVisible(), false);
-  await button.click();
-  await paper.locator('#source').click();
-  assert.equal(await menu.isVisible(), false);
-});
-
-test('Firefox keyboard navigation selects a state and Escape closes the list', async t => {
-  const { page, button, menu, paper } = await fixture(t);
-  await button.click();
+test('Firefox keyboard navigation can select a state without activating Reader shortcuts', async t => {
+  const { page, select, paper } = await fixture(t);
+  await select.focus();
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Enter');
-  assert.equal(await button.evaluate(element => element.value), 'translation');
+  assert.equal(await select.inputValue(), 'translation');
   assert.equal(await paper.locator('.zrb-original-text').isVisible(), false);
-  await button.focus();
-  await page.keyboard.press('Space');
-  assert.equal(await menu.isVisible(), true);
-  await page.keyboard.press('Escape');
-  assert.equal(await menu.isVisible(), false);
-  assert.equal(await button.getAttribute('aria-expanded'), 'false');
 });
 
 test('translation-only removes inline fi glyph fragments and restores prose with figures and formulas intact', async t => {
-  const { page, paper, button, menu, errors } = await fixture(t);
+  const { page, paper, select, errors } = await fixture(t);
   await page.evaluate(() => {
     const doc = ReadingBilingual.getRealContentDoc(testReader);
     doc.body.innerHTML = `
       <p id="ligatures" data-zrb-translation-only-prepared="true"><span class="zrb-original-text">scienti</span><code id="glyph">fi</code><span class="zrb-original-text">c findings </span><span aria-hidden="true">fi</span><code><em>ffi</em></code></p>
       <div class="zotero-bilingual-card" id="translation">科学结果，变量 <code>fi</code> 保留在译文中</div>
-      <p id="mixed">Original formula <math id="equation"><mi>fi</mi><mo>+</mo><mn>1</mn></math><img id="figure" width="40" height="20" alt="figure" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2220%22%3E%3Crect width=%2240%22 height=%2220%22 fill=%22blue%22/%3E%3C/svg%3E"><code id="mixed-glyph">fi</code></p>
+      <p id="mixed">Original formula <math id="equation"><mi>fi</mi><mo>+</mo><mn>1</mn></math><code id="mixed-glyph">fi</code></p>
       <div class="zotero-bilingual-card">公式与图像</div>
+      <figure class="sdt-image" data-ref-path="1.1"><img id="figure" width="40" height="20" alt="figure" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2220%22%3E%3Crect width=%2240%22 height=%2220%22 fill=%22blue%22/%3E%3C/svg%3E"></figure>
       <pre id="program"><code>const fi = 1;</code></pre>`;
     window.ligatureOriginal = doc.getElementById('ligatures').textContent;
   });
-  await button.click();
-  await menu.locator('[data-mode="translation"]').click();
+  await select.selectOption('translation');
   assert.equal((await paper.locator('#ligatures').innerText()).trim(), '', 'no loose fi fragments should remain above the translation');
   assert.equal(await paper.locator('#mixed-glyph').isVisible(), false);
   assert.equal(await paper.locator('#figure').isVisible(), true);
   assert.equal(await paper.locator('#equation').isVisible(), true);
   assert.equal(await paper.locator('#program').innerText(), 'const fi = 1;');
   assert.equal(await paper.locator('#translation code').isVisible(), true, 'literal fi inside the translation is valid content');
-  await button.click();
-  await menu.locator('[data-mode="bilingual"]').click();
+  await select.selectOption('bilingual');
   assert.equal(await paper.locator('#ligatures').textContent(), await page.evaluate(() => ligatureOriginal));
   assert.equal(await paper.locator('#glyph').isVisible(), true);
   assert.deepEqual(errors, []);

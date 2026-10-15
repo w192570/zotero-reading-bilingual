@@ -2,7 +2,7 @@
 
 专为 Zotero 阅读模式打造的中英双语对照翻译插件。译文以卡片形式插在原文段落之下，原文保持不动。
 
-![version](https://img.shields.io/badge/version-1.6.9-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![version](https://img.shields.io/badge/version-1.6.10-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 ![demo](docs/demo.gif)
 
@@ -43,7 +43,7 @@
 
 ## 安装
 
-1. 下载本次修改对应的 `zotero-reading-bilingual-1.6.9.xpi`，或按下方「开发」说明从本分支打包。
+1. 下载本次修改对应的 `zotero-reading-bilingual-1.6.10.xpi`，或按下方「开发」说明从本分支打包。
 2. Zotero 菜单：工具 → 插件 → 右上角齿轮 → Install Plugin From File，选择该 xpi。
 3. 打开一篇文献，**切换到阅读模式**，左键展开搜索图标左边的下拉框，选择「对照」或「仅译文」。已有译文会直接显示；首次使用会开始翻译。
 
@@ -112,7 +112,7 @@ Zotero 的阅读模式「外观」面板里可以调页宽和字号，但这两�
 zip -r -X zotero-reading-bilingual.xpi manifest.json bootstrap.js prefs.js content
 ```
 
-渲染与编辑回归检查：`npm ci && npm test`。首次运行浏览器回归前执行 `npx playwright install firefox`，再运行 `npm run test:browser`。浏览器用例使用 Firefox 的真实鼠标输入，并复现 Zotero 焦点管理取消 `pointerdown` 默认行为的情况；不能仅手动派发 `mousedown`/`click` 来验证下拉框。npm 依赖只用于测试，不参与插件运行。
+渲染与编辑回归检查：`npm ci && npm test`。首次运行浏览器回归前执行 `npx playwright install firefox`，再运行 `npm run test:browser`。浏览器用例使用 Firefox 的真实鼠标输入，并按 Zotero 焦点管理的规则取消普通工具栏控件的 `pointerdown` 默认行为；原生下拉框会被放行，测试会单击并实际选择状态。npm 依赖只用于测试，不参与插件运行。
 
 ## License
 

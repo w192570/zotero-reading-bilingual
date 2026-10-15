@@ -211,8 +211,11 @@ function setupToolbar(translated = true) {
   const contentDoc = new JSDOM('<!doctype html><html><body><p>English paragraph<img id="figure"></p>' + (translated ? '<div class="zotero-bilingual-card">译文</div>' : '') + '</body></html>').window.document;
   const reader = { _iframeWindow: { document: doc } };
   plugin.getRealContentDoc = () => contentDoc;
-  // Zotero cancels pointerdown; the browser consequently omits mousedown.
-  doc.defaultView.addEventListener("pointerdown", (event) => event.preventDefault());
+  // Zotero cancels pointerdown for ordinary toolbar elements, but exempts
+  // native form controls such as select.
+  doc.defaultView.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("input, textarea, select, [contenteditable='true']")) event.preventDefault();
+  });
   plugin.injectToolbarButton(reader, doc);
   return { ...state, contentDoc, reader, select: doc.getElementById("zrb-display-mode") };
 }
@@ -226,64 +229,39 @@ function mouseClick(doc, element) {
   send("click");
 }
 
-test("the first single mouse click opens three choices and selecting one changes the display", async () => {
+test("the native toolbar dropdown exposes all three states and applies each change", async () => {
   const { doc, plugin, contentDoc, reader, select } = setupToolbar();
   const nativeButton = doc.getElementById("native-reading-mode");
-  const menu = doc.getElementById("zrb-display-mode-menu");
-  assert.equal(select.tagName, "BUTTON");
+  assert.equal(select.tagName, "SELECT");
   assert.equal(select.getAttribute("aria-label"), "显示内容");
-  assert.equal(menu.hidden, true);
-  assert.deepEqual(Array.from(menu.children).map((option) => option.textContent), ["原文", "对照", "仅译文"]);
+  assert.deepEqual(Array.from(select.options).map((option) => [option.value, option.textContent]), [
+    ["original", "原文"], ["bilingual", "对照"], ["translation", "仅译文"]
+  ]);
   assert.equal(select.value, "bilingual");
   assert.equal(select.nextElementSibling, doc.querySelector(".find"));
   assert.equal(doc.getElementById("zrb-button-context-menu"), null);
 
-  // Start with focus elsewhere: one complete mouse click must leave it open.
+  // Start with focus elsewhere and confirm FocusManager leaves the native
+  // select pointer action intact.
   nativeButton.focus();
+  let pointerDownDefaultPrevented = null;
+  select.addEventListener("pointerdown", (event) => { pointerDownDefaultPrevented = event.defaultPrevented; });
   mouseClick(doc, select);
-  assert.equal(menu.hidden, false);
-  assert.equal(select.getAttribute("aria-expanded"), "true");
+  assert.equal(pointerDownDefaultPrevented, false);
   for (const mode of ["original", "translation", "bilingual"]) {
-    if (menu.hidden) mouseClick(doc, select);
-    mouseClick(doc, menu.querySelector(`[data-mode="${mode}"]`));
+    select.value = mode;
+    select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
     await new Promise(setImmediate);
-    assert.equal(menu.hidden, true);
-    assert.equal(select.getAttribute("aria-expanded"), "false");
     assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, mode);
     assert.equal(select.value, mode);
-    assert.equal(select.querySelector(".zrb-display-mode-label").textContent, {original:"原文", bilingual:"对照", translation:"仅译文"}[mode]);
-    assert.equal(menu.querySelector(`[data-mode="${mode}"]`).getAttribute("aria-selected"), "true");
     assert.equal(contentDoc.querySelector(".zotero-bilingual-card").classList.contains("zotero-bilingual-hidden"), mode === "original");
   }
   assert.equal(nativeButton.className, "active", "Zotero's reading-mode switch stays enabled");
   assert.equal(nativeButton.textContent, "阅读模式");
   plugin.injectToolbarButton(reader, doc);
   assert.equal(doc.querySelectorAll("#zrb-display-mode").length, 1);
-  assert.equal(doc.querySelectorAll("#zrb-display-mode-menu").length, 1);
+  assert.equal(doc.querySelectorAll("#zrb-display-mode-menu").length, 0);
   assert.equal(doc.getElementById("zrb-display-mode"), select);
-});
-
-test("the dropdown closes on a second click, outside click or Escape and supports keyboard activation", () => {
-  const { doc, contentDoc, select } = setupToolbar();
-  const menu = doc.getElementById("zrb-display-mode-menu");
-  mouseClick(doc, select);
-  mouseClick(doc, select);
-  assert.equal(menu.hidden, true);
-  mouseClick(doc, select);
-  mouseClick(doc, doc.body);
-  assert.equal(menu.hidden, true);
-  mouseClick(doc, select);
-  mouseClick(contentDoc, contentDoc.body);
-  assert.equal(menu.hidden, true, "a click in the nested reading document closes the popup too");
-
-  select.click(); // Keyboard/accessibility click has detail 0.
-  assert.equal(menu.hidden, false);
-  assert.equal(doc.activeElement.dataset.mode, "bilingual");
-  doc.activeElement.dispatchEvent(new doc.defaultView.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
-  assert.equal(doc.activeElement.dataset.mode, "translation");
-  doc.activeElement.dispatchEvent(new doc.defaultView.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-  assert.equal(menu.hidden, true);
-  assert.equal(doc.activeElement, select);
 });
 
 test("the visible dropdown follows keyboard visibility changes and replaces stale controls", async () => {
@@ -293,8 +271,6 @@ test("the visible dropdown follows keyboard visibility changes and replaces stal
   await plugin.toggleVisibility(reader);
   assert.equal(select.value, "bilingual");
 
-  mouseClick(doc, select);
-  const oldMenu = doc.getElementById("zrb-display-mode-menu");
   select.dataset.zrbSession = "old-session";
   const legacy = doc.createElement("button");
   legacy.id = "zotero-reading-bilingual-btn";
@@ -303,9 +279,8 @@ test("the visible dropdown follows keyboard visibility changes and replaces stal
   plugin.injectToolbarButton(reader, doc);
   assert.equal(doc.getElementById("zotero-reading-bilingual-btn"), null);
   assert.notEqual(doc.getElementById("zrb-display-mode"), select);
-  assert.equal(oldMenu.isConnected, false);
   assert.equal(doc.querySelectorAll("#zrb-display-mode").length, 1);
-  assert.equal(doc.querySelectorAll("#zrb-display-mode-menu").length, 1);
+  assert.equal(doc.querySelectorAll("#zrb-display-mode-menu").length, 0);
   assert.equal(doc.getElementById("zrb-display-mode").value, "bilingual");
 });
 
