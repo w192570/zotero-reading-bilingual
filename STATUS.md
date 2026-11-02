@@ -267,4 +267,4 @@ python tools/check-delivery.py --xpi "zotero-reading-bilingual-1.6.13-figure-lay
 - 原生跨页图按共享图注和 SDT 来源顺序合并相邻页的图形碎片；Cella 实际 PDF 的 Figure 18 对应 PDF 第 17、18 页共 7 个图像碎片，按区域顺序预览，不强制拼接成长图。
 - 自动回归：`npm test` 104/104；`npm run test:browser` 28/28；真实 Gecko 153.0 + 本机 Zotero Reader/PDF.js 对 Figure 18 的裁剪与恢复用例通过。运行环境不是日常 Windows Zotero 桌面会话，桌面验收仍待用户复核。
 - 本轮测试包 `zotero-reading-bilingual-1.6.13-figure-editor-usability-test.xpi`：79 个运行文件，1,117,667 字节，SHA-256 `ef7b47a271cb0c2d94221d52d1aa09aea0975c30b096a3c8657f6d8b7984d850`。包内文件、当前源码与 `F:\111office\zotero\plugins` 副本逐项一致。保留上一测试包 `zotero-reading-bilingual-1.6.13-manual-figure-crop-test.xpi` 作为回退；正式版本仍为 1.6.13。
-- 尚未执行 Git 提交或推送；待确认提交范围后处理。日常 Zotero 桌面验收仍未完成。
+- 图像裁剪/跨页识别相关文件已提交：`9181cdc`（Improve figure crop editing and cross-page detection）；未推送。其他排版、翻译相关改动仍保留在工作区，没有纳入本次提交。日常 Zotero 桌面验收仍未完成。
