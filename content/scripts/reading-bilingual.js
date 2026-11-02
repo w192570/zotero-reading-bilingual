@@ -15,6 +15,9 @@ var ReadingBilingual = {
   _autoTranslateTimers: new Map(),
   _autoTranslatingReaders: new WeakSet(),
   _displayModeTranslations: new WeakMap(),
+  _cardRetryTasks: new WeakMap(),
+  _cardRetryRequests: new WeakMap(),
+  _retryRuns: new WeakMap(),
   // One-shot marker per reading-mode view, so the defaults are applied when a
   // document opens and never fight a manual change afterwards
   _appearanceApplied: new WeakSet(),
@@ -43,6 +46,7 @@ var ReadingBilingual = {
   DEFAULT_FALLBACK_MODELS: "gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash",
   PREF_READER_PAGE_WIDTH: "extensions.zotero.reading-bilingual.readerPageWidth",
   PREF_READER_SCALE: "extensions.zotero.reading-bilingual.readerScale",
+  PREF_READER_DISPLAY_MODE: "extensions.zotero.reading-bilingual.readerDisplayMode",
   DEFAULT_CONCURRENCY: 3,
   DEFAULT_PROVIDER: "gemini",
   DEFAULT_MODEL: "gemini-flash-latest",
@@ -450,11 +454,45 @@ var ReadingBilingual = {
     Zotero.Prefs.set(this.PREF_READER_SCALE, Number.isFinite(n) && n >= 50 && n <= 400 ? n : 0, true);
   },
 
+  getPDFFigureMode() {
+    return typeof ZRBPDFFigureFallback !== "undefined" ? ZRBPDFFigureFallback.getMode() : "manual";
+  },
+
+  setPDFFigureMode(value) {
+    const mode = ["off", "manual", "auto"].includes(value) ? value : "manual";
+    if (mode === this.getPDFFigureMode()) return;
+    Zotero.Prefs.set("extensions.zotero.reading-bilingual.figureMode", mode, true);
+    if (typeof ZRBPDFFigureFallback !== "undefined") {
+      if (mode === "off") ZRBPDFFigureFallback.shutdown();
+      else ZRBPDFFigureFallback.sync(Object.values(Zotero.Reader?._readers || {}));
+    }
+  },
+
+  getPDFFigureCache() {
+    return typeof ZRBPDFFigureFallback !== "undefined" ? ZRBPDFFigureFallback.cacheEnabled() : true;
+  },
+
+  setPDFFigureCache(value) {
+    Zotero.Prefs.set("extensions.zotero.reading-bilingual.figureCache", !!value, true);
+  },
+
+  async getPDFFigureCacheStats() {
+    return typeof ZRBPDFFigureFallback !== "undefined" ? ZRBPDFFigureFallback.getCache()?.stats() : null;
+  },
+
+  async clearPDFFigureCache() {
+    return typeof ZRBPDFFigureFallback !== "undefined" ? ZRBPDFFigureFallback.getCache()?.clear() : null;
+  },
+
   // Zotero has no preference for these: the reading-mode defaults live in a
   // frozen constant inside the bundled reader, and the panel's value is only
   // kept for the open document. So apply the user's choice once per view.
   sweepReaderAppearance() {
     try {
+      if (typeof ZRBPDFFigureFallback !== "undefined") {
+        ZRBPDFFigureFallback.sync(Object.values(Zotero.Reader?._readers || {}));
+      }
+      if (typeof ZRBManualFigures !== "undefined") ZRBManualFigures.sync(Object.values(Zotero.Reader?._readers || {}));
       const needsAppearance = this.getReaderPageWidth() !== "off" || !!this.getReaderScale();
       const needsAutoTranslate = this.getAutoTranslate();
       if (!needsAppearance && !needsAutoTranslate) return;
@@ -737,6 +775,19 @@ var ReadingBilingual = {
       bgColor = "var(--material-sidepane, #ffffff)";
     }
 
+    // Reader already identifies headings/captions. Style their adjacent
+    // translations from that structure, including cards restored from cache.
+    // Scale the content only so edit/copy controls keep their normal size.
+    const headingCSS = [1.5, 1.3, 1.15, 1.1, 1.05, 1.05].map((scale, i) => `
+      #sdt-content :is(h${i + 1}, [role="heading"][aria-level="${i + 1}"]) + .zotero-bilingual-card > .zrb-card-content {
+        font-size: ${scale}em !important;
+        font-weight: 700 !important;
+        line-height: 1.4 !important;
+      }
+    `).join("\n");
+    const captionContent = `#sdt-content :is(figcaption, caption, .sdt-caption, .caption) + .zotero-bilingual-card > .zrb-card-content,
+      #sdt-content :is(figcaption, caption, .sdt-caption, .caption) .zotero-bilingual-card > .zrb-card-content`;
+
     return `
       .zotero-bilingual-card {
         position: relative !important;
@@ -772,6 +823,77 @@ var ReadingBilingual = {
         display: block !important;
         width: 100% !important;
         white-space: pre-wrap !important;
+      }
+      .zrb-chinese-prose-translation > .zrb-card-content[data-zrb-first-line-indent="true"],
+      .zrb-chinese-prose-translation .zrb-rich-text > p.zrb-first-line-indent {
+        text-indent: 2em !important;
+      }
+      .zrb-collapsible-note {
+        display: block !important;
+        margin: 0.2em 0 0.45em !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        color: inherit !important;
+        font-size: 0.86em !important;
+        line-height: 1.45 !important;
+      }
+      .zrb-collapsible-note > summary {
+        display: list-item !important;
+        width: fit-content !important;
+        margin: 0 !important;
+        padding: 0.12em 0.25em !important;
+        color: var(--fill-secondary, #666) !important;
+        font-size: 0.9em !important;
+        line-height: 1.4 !important;
+        cursor: pointer !important;
+      }
+      .zrb-collapsible-note-body {
+        margin: 0.25em 0 0 1em !important;
+        padding: 0 0 0 0.55em !important;
+        border-inline-start: 1px solid rgba(127,127,127,0.28) !important;
+        font-size: 0.96em !important;
+        line-height: 1.45 !important;
+      }
+      .zrb-collapsible-note-body > .zotero-bilingual-card {
+        margin: 0.15em 0 0.35em !important;
+        padding: 0.25em 0.45em !important;
+        border: 0 !important;
+        border-inline-start: 1px solid rgba(127,127,127,0.22) !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        font-size: 0.96em !important;
+        line-height: 1.45 !important;
+      }
+      .zrb-collapsible-note-body > .zotero-bilingual-card:hover {
+        background: transparent !important;
+      }
+      .zrb-collapsible-note-body > .sdt-note,
+      .zrb-collapsible-note-body > p {
+        margin-block: 0.2em !important;
+      }
+      .zrb-translation-retry-row, .zrb-translation-retry-summary {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        font: 13px/1.5 sans-serif; text-align: left; margin-top: 8px;
+      }
+      .zrb-translation-retry-summary {
+        margin: 12px 0; padding: 10px; border: 1px solid #8886; border-radius: 4px;
+      }
+      .zrb-translation-retry-row button, .zrb-translation-retry-summary button {
+        font: inherit; cursor: pointer; padding: 4px 10px;
+      }
+      .zrb-translation-retry-row button:disabled, .zrb-translation-retry-summary button:disabled { cursor: wait; }
+      .zrb-display-original .zrb-translation-retry-summary { display: none; }
+      ${headingCSS}
+      ${captionContent} {
+        font-size: 0.85em !important;
+        line-height: 1.5 !important;
+        text-align: center !important;
+      }
+      #sdt-content :is(figcaption, caption, .sdt-caption, .caption) + .zotero-bilingual-card > .zrb-card-content p,
+      #sdt-content :is(figcaption, caption, .sdt-caption, .caption) .zotero-bilingual-card > .zrb-card-content p {
+        text-align: center !important;
       }
       .zrb-toc-zh, .zotero-bilingual-roadmap-lead, .zotero-bilingual-roadmap-item {
         white-space: pre-wrap !important;
@@ -1506,6 +1628,8 @@ var ReadingBilingual = {
   },
 
   shutdown() {
+    if (typeof ZRBManualFigures !== "undefined") ZRBManualFigures.shutdown();
+    if (typeof ZRBPDFFigureFallback !== "undefined") ZRBPDFFigureFallback.shutdown();
     for (let win of Zotero.getMainWindows()) {
       this.removeMenus(win);
       this.removeShortcuts(win);
@@ -1776,15 +1900,24 @@ var ReadingBilingual = {
     const doc = toolbarDoc || reader?._iframeWindow?.document || reader?._iframe?.contentDocument;
     const button = doc?.getElementById("zrb-display-mode");
     if (!button) return;
-    const mode = this.getReaderDisplayMode(this.getRealContentDoc(reader));
+    const contentDoc = this.getRealContentDoc(reader);
+    // Restore a fresh SDT before cached cards can determine the select's value.
+    this.restoreReaderDisplayMode(contentDoc);
+    const mode = this.getReaderDisplayMode(contentDoc);
     if (button.value !== mode) button.value = mode;
     button.classList.toggle("active", mode !== "original");
   },
 
   // Watch for Zotero 10 SDT Reading Mode entering
   setupReadingModeObserver(reader, doc) {
+    if (typeof ZRBPDFFigureFallback !== "undefined") ZRBPDFFigureFallback.ensure(reader);
+    if (typeof ZRBManualFigures !== "undefined") ZRBManualFigures.ensure(reader);
     const cDoc = this.getRealContentDoc(reader);
-    if (cDoc) this.setupSelectionContextMenu(reader, cDoc);
+    if (cDoc) {
+      this.restoreReaderDisplayMode(cDoc);
+      this.setupSelectionContextMenu(reader, cDoc);
+      this.prepareTranslationRetries(reader, cDoc);
+    }
 
     if (this.observedDocs.has(doc)) return;
     this.observedDocs.add(doc);
@@ -1798,10 +1931,16 @@ var ReadingBilingual = {
     if (!win.MutationObserver) return;
 
     const observer = new win.MutationObserver(() => {
+      if (typeof ZRBPDFFigureFallback !== "undefined") ZRBPDFFigureFallback.ensure(reader);
+      if (typeof ZRBManualFigures !== "undefined") ZRBManualFigures.ensure(reader);
       this.injectToolbarButton(reader, doc);
       this.applyReaderAppearanceDefaults(reader);
       const curContentDoc = this.getRealContentDoc(reader);
-      if (curContentDoc) this.setupSelectionContextMenu(reader, curContentDoc);
+      if (curContentDoc) {
+        this.restoreReaderDisplayMode(curContentDoc);
+        this.setupSelectionContextMenu(reader, curContentDoc);
+        this.prepareTranslationRetries(reader, curContentDoc);
+      }
       this.scheduleAutoTranslate(reader);
     });
 
@@ -2131,6 +2270,9 @@ var ReadingBilingual = {
   },
 
   async _saveCacheNow(reader, newTranslations, overwrite = false) {
+    newTranslations = Object.fromEntries(Object.entries(newTranslations).filter(([, value]) =>
+      typeof value !== "string" || this.isUsableTranslation(value)));
+    if (!Object.keys(newTranslations).length) return;
     const path = await this.getCacheFilePath(reader);
     if (!path) return;
     try {
@@ -2264,7 +2406,7 @@ var ReadingBilingual = {
       if (!node.nodeValue || !node.nodeValue.trim()) continue;
       const parent = node.parentElement;
       if (!parent || parent.closest(
-        ".zrb-original-text, .zotero-bilingual-card, script, style, textarea, input, button, pre, svg, canvas, video, audio, iframe, object, embed, math, .sdt-math, .katex, .MathJax, [role='math']"
+        ".zrb-original-text, .zotero-bilingual-card, .zrb-pdf-figure-fallback, .zrb-manual-figure, .zrb-manual-editor, script, style, textarea, input, button, pre, svg, canvas, video, audio, iframe, object, embed, math, .sdt-math, .katex, .MathJax, [role='math']"
       )) continue;
       textNodes.push(node);
     }
@@ -2278,6 +2420,191 @@ var ReadingBilingual = {
     // Revisit documents prepared by older versions. Existing wrappers are
     // skipped above, so upgrading does not nest spans or discard source text.
     sourceEl.dataset.zrbTranslationOnlyPrepared = "2";
+  },
+
+  isChineseProseSource(sourceEl) {
+    if (!sourceEl || sourceEl.nodeType !== 1) return false;
+    if (sourceEl.classList.contains("zrb-author-info-source")) return false;
+    if (sourceEl.closest("li, table, figure, figcaption, caption, .sdt-note, .sdt-reference, .sdt-math, .sdt-source-crop, pre, code, blockquote, h1, h2, h3, h4, h5, h6, [role='math'], [role='heading']")) return false;
+    if (Array.from(sourceEl.classList).some(name => /caption|figure|heading/i.test(name))) return false;
+    if (this.isCaptionText(sourceEl.innerText || sourceEl.textContent || "")) return false;
+    const tag = sourceEl.tagName?.toLowerCase();
+    return tag === "p" || sourceEl.getAttribute("role") === "paragraph" || sourceEl.classList.contains("reader-paragraph");
+  },
+
+  prepareTranslationCard(sourceEl, card) {
+    if (!card?.classList) return;
+    card.classList.toggle("zrb-chinese-prose-translation", this.isChineseProseSource(sourceEl));
+    this.updateChineseFirstLineIndent(card);
+  },
+
+  updateChineseFirstLineIndent(card) {
+    const content = card?.querySelector?.(".zrb-card-content");
+    if (!content) return;
+    content.removeAttribute("data-zrb-first-line-indent");
+    content.querySelectorAll(".zrb-first-line-indent").forEach((paragraph) => paragraph.classList.remove("zrb-first-line-indent"));
+    if (!card.classList.contains("zrb-chinese-prose-translation")) return;
+
+    const hasChinese = (text) => /[\u3400-\u4dbf\u4e00-\u9fff]/.test(text || "");
+    const hasLeadingIndent = (text) => /^[\s\u3000\u00a0]/.test(text || "");
+    const rich = content.querySelector(":scope > .zrb-rich-text");
+    if (rich) {
+      for (const paragraph of rich.querySelectorAll(":scope > p")) {
+        const text = paragraph.textContent || "";
+        if (hasChinese(text) && !hasLeadingIndent(text)) paragraph.classList.add("zrb-first-line-indent");
+      }
+      return;
+    }
+
+    // Plain translation output is a text node. Structured Markdown is handled
+    // paragraph by paragraph above so lists, formulas, code, and tables stay flush.
+    if (Array.from(content.childNodes).every((node) => node.nodeType === 3)
+      && hasChinese(content.textContent) && !hasLeadingIndent(content.textContent)) {
+      content.dataset.zrbFirstLineIndent = "true";
+    }
+  },
+
+  prepareStructuredNotes(doc) {
+    const root = doc?.querySelector?.("#sdt-content");
+    if (!root) return 0;
+
+    // Unwrap author sections left by older plugin builds, keeping every node
+    // in its original reading order while removing the obsolete disclosure.
+    for (const details of root.querySelectorAll('details[data-zrb-note-kind="author"]')) {
+      const body = details.querySelector(":scope > .zrb-collapsible-note-body");
+      while (body?.firstChild) details.parentNode.insertBefore(body.firstChild, details);
+      details.remove();
+    }
+
+    const sourceBlocks = Array.from(root.children).filter((el) => el.hasAttribute("data-ref-path"));
+    if (!sourceBlocks.length) return 0;
+    const order = new Map(sourceBlocks.map((el, index) => [el, index]));
+    const parseRef = (value) => /^\d+(?:\.\d+)*$/.test(value || "") ? value : null;
+    const refNode = (value) => {
+      const ref = parseRef(value);
+      return ref ? root.querySelector(`[data-ref-path="${ref}"]`) : null;
+    };
+    const textOf = (el) => (el?.innerText || el?.textContent || "").replace(/\s+/g, " ").trim();
+    const isListLike = (el) => {
+      if (!el) return false;
+      if (el.matches?.("li,ul,ol,[role='list'],[role='listitem']") || el.closest?.("li,ul,ol,[role='list'],[role='listitem']")) return true;
+      if (Array.from(el.classList || []).some(name => /^(?:sdt-)?(?:list|list-item|listitem|bullet-list)$/i.test(name))) return true;
+      return /^[\s\u00a0]*[•●▪◦‣∙·]\s*/u.test(textOf(el));
+    };
+    const bodyHeading = /^(?:abstract|摘要|introduction|引言|绪论|背景|1[.、\s]+(?:introduction|引言|绪论|背景))/i;
+    let frontMatterEnd = sourceBlocks.findIndex((el) => {
+      const text = textOf(el);
+      const heading = /^H[1-6]$/i.test(el.tagName) || el.getAttribute("role") === "heading";
+      return bodyHeading.test(text) && (heading || text.length < 100);
+    });
+    const isFrontMatter = (el) => {
+      let block = el?.matches?.("[data-ref-path]") ? el : el?.closest?.("[data-ref-path]");
+      while (block && block.parentElement !== root) block = block.parentElement?.closest?.("[data-ref-path]");
+      const index = order.get(block);
+      return frontMatterEnd >= 0 && Number.isInteger(index) && index < frontMatterEnd;
+    };
+    const authorSignal = /(?:[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:school|college|department|faculty|institute|laboratory)\s+of\b|\bUniversity\s+of\s+[A-Z]|\b(?:corresponding author|communicated by|editor)\b|大学|学院|系\b|通讯作者|通信作者|编辑|由.{1,20}负责处理)/i;
+    const notes = Array.from(root.querySelectorAll("aside.sdt-note[data-ref-path]"))
+      .filter((note) => note.dataset.zrbNoteCollapsed !== "true" && !note.closest("details[data-zrb-note-kind]") && !isListLike(note));
+    const authorNotes = new Set(notes.filter((note) => {
+      if (!authorSignal.test(textOf(note))) return false;
+      const links = (note.dataset.backRefs || "").split(/\s+/).map(refNode).filter(Boolean);
+      return links.some(isFrontMatter) || (isFrontMatter(note) && links.length === 0);
+    }));
+
+    const authorNodes = new Set();
+    for (const block of sourceBlocks) {
+      if (!isFrontMatter(block) || isListLike(block) || block.matches("h1,h2,h3,h4,h5,h6,figcaption,caption,table,figure,pre,.sdt-math,.sdt-reference")) continue;
+      if (authorSignal.test(textOf(block))) authorNodes.add(block);
+    }
+    // SDT back-references connect affiliation notes to the author line. Include
+    // only short front-matter source blocks linked from an already identified
+    // affiliation/editor note; a superscript or a small font alone is not enough.
+    for (const note of authorNotes) {
+      for (const ref of (note.dataset.backRefs || "").split(/\s+/)) {
+        const block = refNode(ref);
+        const text = textOf(block);
+        if (block && isFrontMatter(block) && !isListLike(block) && text.length > 0 && text.length <= 180
+          && !block.matches("h1,h2,h3,h4,h5,h6,figcaption,caption,table,figure,pre,.sdt-math,.sdt-reference")) {
+          authorNodes.add(block);
+        }
+      }
+    }
+    for (const el of authorNodes) {
+      el.dataset.zrbOriginalText = (el.innerText || el.textContent || "").trim();
+      el.dataset.zrbAuthorInfoSource = "true";
+      el.classList.add("zrb-author-info-source");
+      this.markSourceForTranslationOnly(el);
+    }
+    for (const note of authorNotes) note.classList.add("zrb-author-info-source");
+    for (const note of notes) this.markSourceForTranslationOnly(note);
+
+    let footnoteNumber = 0;
+    for (const note of notes) {
+      if (authorNotes.has(note)) continue;
+      const labelText = textOf(note);
+      const originalText = (note.innerText || note.textContent || "").trim();
+      const marker = labelText.match(/^([0-9]{1,3}|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|[*†‡])(?:[.)\s]+)/);
+      const backRefMarker = (note.dataset.backRefs || "").split(/\s+/).map(refNode).filter(Boolean)
+        .map(el => el.querySelector("sup, a.sdt-ref, .sup-like")?.textContent?.trim())
+        .find(text => /^(?:\d{1,3}|[*†‡])$/.test(text || ""));
+      const ordinal = ++footnoteNumber;
+      const label = `脚注 ${marker?.[1] || backRefMarker || ordinal}`;
+      const card = note.nextElementSibling?.classList.contains("zotero-bilingual-card") ? note.nextElementSibling : null;
+      if (card) card.classList.add("zrb-footnote-translation-card");
+      const details = doc.createElement("details");
+      details.className = "zrb-collapsible-note";
+      details.dataset.zrbNoteKind = "footnote";
+      details.dataset.zrbOriginalText = originalText;
+      const summary = doc.createElement("summary");
+      summary.textContent = label;
+      const body = doc.createElement("div");
+      body.className = "zrb-collapsible-note-body";
+      for (const child of Array.from(note.childNodes)) body.appendChild(child);
+      if (card) body.appendChild(card);
+      details.append(summary, body);
+      note.appendChild(details);
+      note.dataset.zrbNoteCollapsed = "true";
+    }
+    for (const card of root.querySelectorAll(".zotero-bilingual-card")) {
+      const source = card.parentElement?.tagName?.toLowerCase() === "li"
+        ? card.parentElement
+        : card.previousElementSibling;
+      if (source) this.prepareTranslationCard(source, card);
+    }
+    return authorNodes.size + notes.length;
+  },
+
+  injectCachedMetadataTranslations(doc, cache, reader = {}) {
+    if (!doc || !cache) return 0;
+    let inserted = 0;
+    const addCard = (anchor, text, translation, parent = null) => {
+      if (!text || !this.isUsableTranslation(translation)) return false;
+      const card = this.createCardElement(reader, doc, text, this.cleanTypography(translation), false);
+      card.classList.add("zrb-metadata-translation-card");
+      if (parent) parent.appendChild(card);
+      else anchor.insertAdjacentElement("afterend", card);
+      return true;
+    };
+    for (const source of doc.querySelectorAll("[data-zrb-author-info-source='true']")) {
+      const text = source.dataset.zrbOriginalText || (source.innerText || source.textContent || "").trim();
+      const hasCard = source.nextElementSibling?.classList.contains("zotero-bilingual-card");
+      if (!hasCard && addCard(source, text, cache[text])) inserted++;
+    }
+    for (const details of doc.querySelectorAll("details[data-zrb-note-kind='footnote']")) {
+      const body = details.querySelector(":scope > .zrb-collapsible-note-body");
+      if (!body?.querySelector(".zrb-footnote-translation-card")) {
+        const text = details.dataset.zrbOriginalText || "";
+        const translation = cache[text];
+        if (this.isUsableTranslation(translation)) {
+          const card = this.createCardElement(reader, doc, text, this.cleanTypography(translation), false);
+          card.classList.add("zrb-footnote-translation-card");
+          body.appendChild(card);
+          inserted++;
+        }
+      }
+    }
+    return inserted;
   },
 
   prepareTranslationOnlySources(doc) {
@@ -2326,7 +2653,23 @@ var ReadingBilingual = {
     if (root.classList.contains("zrb-translation-only")) return "translation";
     const cards = Array.from(contentDoc.querySelectorAll(".zotero-bilingual-card"));
     if (cards.length && cards.every((card) => card.classList.contains("zotero-bilingual-hidden"))) return "original";
-    return cards.length ? "bilingual" : "original";
+    return cards.length ? "bilingual" : this.getPreferredReaderDisplayMode();
+  },
+
+  getPreferredReaderDisplayMode() {
+    try {
+      const mode = Zotero.Prefs.get(this.PREF_READER_DISPLAY_MODE, true);
+      return ["original", "bilingual", "translation"].includes(mode) ? mode : "original";
+    } catch (e) {
+      return "original";
+    }
+  },
+
+  restoreReaderDisplayMode(contentDoc) {
+    const root = contentDoc?.documentElement;
+    if (!root || !contentDoc.querySelector("#sdt-content")) return false;
+    if (["original", "bilingual", "translation"].includes(root.dataset.zrbDisplayMode)) return true;
+    return this.applyReaderDisplayMode(contentDoc, this.getPreferredReaderDisplayMode());
   },
 
   applyReaderDisplayMode(contentDoc, mode) {
@@ -2358,7 +2701,9 @@ var ReadingBilingual = {
     const contentDoc = this.getRealContentDoc(reader);
     if (!contentDoc) return false;
     const previousMode = this.getReaderDisplayMode(contentDoc);
-    this.applyReaderDisplayMode(contentDoc, mode);
+    if (!this.applyReaderDisplayMode(contentDoc, mode)) return false;
+    try { Zotero.Prefs.set(this.PREF_READER_DISPLAY_MODE, mode, true); }
+    catch (e) { Zotero.debug("[ReadingBilingual] Could not save Reader display mode: " + e); }
     this.syncToolbarDisplayMode(reader);
     if (mode === "original" || contentDoc.querySelector(".zotero-bilingual-card")) return true;
 
@@ -2420,14 +2765,82 @@ var ReadingBilingual = {
     this.syncToolbarDisplayMode(activeReader);
   },
 
-  createCardElement(reader, doc, origText, zhText, isTranslating = false) {
+  sectionNumberForHeading(sourceEl, sourceText = sourceEl?.innerText || sourceEl?.textContent || "") {
+    if (!sourceEl) return "";
+    if (sourceEl.closest?.("li, figure, figcaption, caption, table, [class*='caption']")) return "";
+    const isHeading = /^H[1-6]$/i.test(sourceEl.tagName || "") ||
+      sourceEl.getAttribute?.("role") === "heading" ||
+      Array.from(sourceEl.classList || []).some(name => /heading/i.test(name));
+    if (!isHeading) return "";
+    const chapterLabel = sourceText.match(/^\s*(?:chapter|part)\s+(\d+(?:\.\d+)*|[IVXLCDM]+)(?=\s|[.、)\]]|$)/i);
+    if (chapterLabel) return chapterLabel[1];
+    const arabic = sourceText.match(/^\s*(\d+(?:\.\d+)*[.、)\]]?)(?=\s|$|[A-Z\u4e00-\u9fff])/i);
+    if (arabic) return arabic[1];
+    return sourceText.match(/^\s*([IVXLCDM]+[.、)\]]?)(?=\s|$)/i)?.[1] || "";
+  },
+
+  preserveHeadingNumber(sourceEl, sourceText, translation) {
+    const prefix = this.sectionNumberForHeading(sourceEl, sourceText);
+    if (!translation) return translation || "";
+    const isHeading = /^H[1-6]$/i.test(sourceEl?.tagName || "") || sourceEl?.getAttribute?.("role") === "heading" ||
+      Array.from(sourceEl?.classList || []).some(name => /heading/i.test(name));
+    if (!isHeading || sourceEl.closest?.("li, figure, figcaption, caption, table, [class*='caption']")) {
+      return this.preserveSectionNumber(prefix, translation);
+    }
+    const sourceWord = sourceText.match(/^\s*([A-Za-z][A-Za-z'-]*)\b/);
+    const strayInitial = translation.match(/^\s*([A-Z])\s+(?=[\u4e00-\u9fff])/);
+    const romanPrefix = prefix.match(/^([IVXLCDM]+)[.、)\]]?$/i)?.[1];
+    let cleanTranslation = translation;
+    if (sourceWord && strayInitial && sourceWord[1][0].toUpperCase() === strayInitial[1]
+      && romanPrefix?.toUpperCase() !== strayInitial[1]) {
+      cleanTranslation = translation.replace(/^\s*[A-Z]\s+/, "");
+    }
+    return this.preserveSectionNumber(prefix, cleanTranslation);
+  },
+
+  preserveSectionNumber(prefix, translation) {
+    if (!prefix || !translation) return translation || "";
+    const number = prefix.match(/^(\d+(?:\.\d+)*|[IVXLCDM]+)/i)?.[1];
+    if (!number) return translation;
+    const escapedNumber = number.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (/^\d+$/.test(number) && new RegExp(`^\\s*第\\s*${escapedNumber}\\s*章`).test(translation)) return translation;
+    const existing = translation.match(/^\s*((?:\d+(?:\.\d+)*|[IVXLCDM]+)[.、)\]]?)(?=\s|[A-Z\u4e00-\u9fff])/i);
+    if (existing) {
+      const existingNumber = existing[1].match(/^(\d+(?:\.\d+)*|[IVXLCDM]+)/i)?.[1];
+      if (existingNumber?.toLowerCase() === number.toLowerCase()) return translation;
+      const title = translation.replace(/^\s*(?:\d+(?:\.\d+)*|[IVXLCDM]+)[.、)\]]?(?=\s|[A-Z\u4e00-\u9fff])/, "").trimStart();
+      return `${prefix} ${title}`;
+    }
+    return `${prefix} ${translation.trimStart()}`;
+  },
+
+  repairExistingHeadingNumbers(doc) {
+    for (const card of doc.querySelectorAll(".zotero-bilingual-card")) {
+      if (card.classList.contains("translating") || card.querySelector("textarea")) continue;
+      let sourceEl = card.previousElementSibling;
+      while (sourceEl?.classList.contains("zotero-bilingual-card")) sourceEl = sourceEl.previousElementSibling;
+      const sourceText = card.dataset.origText || sourceEl?.innerText || sourceEl?.textContent || "";
+      const prefix = this.sectionNumberForHeading(sourceEl, sourceText);
+      if (prefix) card.dataset.zrbSectionNumber = prefix;
+      const content = card.querySelector(".zrb-card-content");
+      const translation = ZRBTranslationRenderer.getSource(content);
+      if (!this.isUsableTranslation(translation)) continue;
+      const corrected = this.preserveHeadingNumber(sourceEl, sourceText, translation);
+      if (corrected !== translation) this.setTranslationContent(content, corrected);
+    }
+  },
+
+  createCardElement(reader, doc, origText, zhText, isTranslating = false, sourceEl = null) {
     const card = doc.createElement("div");
     card.className = "zotero-bilingual-card" + (isTranslating ? " translating" : "");
     card.dataset.origText = origText || "";
+    const sectionNumber = this.sectionNumberForHeading(sourceEl, origText);
+    if (sectionNumber) card.dataset.zrbSectionNumber = sectionNumber;
 
     const content = doc.createElement("div");
     content.className = "zrb-card-content";
-    this.setTranslationContent(content, zhText || (isTranslating ? "正在翻译…" : ""), isTranslating);
+    const displayText = this.preserveHeadingNumber(sourceEl, origText, zhText);
+    this.setTranslationContent(content, displayText || (isTranslating ? "正在翻译…" : ""), isTranslating);
     card.appendChild(content);
 
     const actions = doc.createElement("div");
@@ -2465,14 +2878,199 @@ var ReadingBilingual = {
 
   setTranslationContent(content, text, plain = false) {
     ZRBTranslationRenderer.renderInto(content, text, { plain });
+    const card = content?.closest?.(".zotero-bilingual-card");
+    if (card) this.updateChineseFirstLineIndent(card);
+  },
+
+  isTranslationFailure(text) {
+    return /^\s*\[(?:翻译失败|译文解析空|表格翻译失败|学术目录整体翻译失败|篇章架构整体翻译失败)/.test(text || "");
+  },
+
+  isUsableTranslation(text) {
+    return typeof text === "string" && !!text.trim() && !this.isTranslationFailure(text);
+  },
+
+  syncTranslationRetry(card, reader, doc, origText) {
+    if (this._cardRetryTasks.has(card)) return;
+    const content = card.querySelector(".zrb-card-content");
+    const failed = this.isTranslationFailure(ZRBTranslationRenderer.getSource(content));
+    card.dataset.zrbTranslationState = failed ? "failed" : "complete";
+    if (!failed) {
+      card.querySelector(".zrb-translation-retry-row")?.remove();
+      return;
+    }
+    if (!origText || card.querySelector(".zrb-retry-translation")) return;
+    const row = doc.createElement("div");
+    row.className = "zrb-translation-retry-row";
+    const retry = doc.createElement("button");
+    retry.type = "button";
+    retry.className = "zrb-retry-translation";
+    retry.textContent = "重试本段";
+    retry.addEventListener("click", () => this.retryTranslationCards(reader, doc, [card]));
+    row.append(retry);
+    card.append(row);
+  },
+
+  prepareTranslationRetries(reader, doc) {
+    for (const card of doc.querySelectorAll(".zotero-bilingual-card[data-orig-text]")) {
+      if (!card.classList.contains("translating")) this.syncTranslationRetry(card, reader, doc, card.dataset.origText);
+    }
+    this.refreshTranslationRetryBar(reader, doc);
+  },
+
+  refreshTranslationRetryBar(reader, doc) {
+    const root = doc.querySelector("#sdt-content");
+    const failed = doc.querySelectorAll('.zotero-bilingual-card[data-zrb-translation-state="failed"]').length;
+    const pending = doc.querySelectorAll('.zotero-bilingual-card[data-zrb-translation-state="retrying"]').length;
+    let bar = doc.getElementById("zrb-translation-retry-summary");
+    if (!root || (!failed && !pending)) { bar?.remove(); return; }
+    if (!bar) {
+      bar = doc.createElement("div");
+      bar.id = "zrb-translation-retry-summary";
+      bar.className = "zrb-translation-retry-summary";
+      const status = doc.createElement("span"); status.setAttribute("role", "status");
+      const button = doc.createElement("button"); button.type = "button";
+      button.addEventListener("click", () => this.retryFailedTranslations(reader, doc));
+      bar.append(status, button); root.prepend(bar);
+    }
+    const status = bar.querySelector('[role="status"]');
+    const text = `${failed} 段失败${pending ? `，${pending} 段正在重试` : ""}；成功译文已保留`;
+    if (status.textContent !== text) status.textContent = text;
+    const button = bar.querySelector("button");
+    const label = `只重试失败段落（${failed}）`;
+    if (button.textContent !== label) button.textContent = label;
+    button.disabled = !failed || this._retryRuns.has(doc);
+  },
+
+  markTranslationFailed(card, reader, doc, text, error) {
+    card.classList.remove("translating");
+    card.style.borderLeftColor = "#ef4444";
+    const content = card.querySelector(".zrb-card-content");
+    if (content) this.setTranslationContent(content, `[翻译失败: ${String(error?.message || error)}]`, true);
+    card.dataset.zrbTranslationState = "failed";
+    this.attachCardActionHandlers(card, reader, doc, text);
+    const retry = card.querySelector(".zrb-retry-translation");
+    if (retry) { retry.disabled = false; retry.textContent = "重试本段"; }
+  },
+
+  completeTranslationCard(card, reader, doc, text, translation) {
+    if (!card.isConnected) return;
+    card.classList.remove("translating");
+    card.style.borderLeftColor = "";
+    const sectionNumber = card.dataset.zrbSectionNumber;
+    const displayTranslation = this.preserveSectionNumber(sectionNumber, translation);
+    this.setTranslationContent(card.querySelector(".zrb-card-content"), displayTranslation);
+    card.dataset.zrbTranslationState = "complete";
+    card.querySelector(".zrb-translation-retry-row")?.remove();
+    this.attachCardActionHandlers(card, reader, doc, text);
+  },
+
+  applyTranslationResults(reader, doc, items, results) {
+    const translations = {};
+    items.forEach(({card, text}, index) => {
+      const value = results?.[index];
+      if (this.isUsableTranslation(value)) {
+        const clean = this.cleanTypography(value);
+        translations[text] = clean;
+        this.completeTranslationCard(card, reader, doc, text, clean);
+      } else if (card.isConnected) {
+        this.markTranslationFailed(card, reader, doc, text, "接口未返回这一段的有效译文，请重试本段");
+      }
+    });
+    this.refreshTranslationRetryBar(reader, doc);
+    return translations;
+  },
+
+  retryFailedTranslations(reader, doc) {
+    if (this._retryRuns.has(doc)) return this._retryRuns.get(doc);
+    this.prepareTranslationRetries(reader, doc);
+    const cards = Array.from(doc.querySelectorAll('.zotero-bilingual-card[data-zrb-translation-state="failed"]'));
+    const task = this.retryTranslationCards(reader, doc, cards).finally(() => {
+      this._retryRuns.delete(doc); this.refreshTranslationRetryBar(reader, doc);
+    });
+    this._retryRuns.set(doc, task); this.refreshTranslationRetryBar(reader, doc);
+    return task;
+  },
+
+  retryTranslationCards(reader, doc, cards) {
+    const existing = cards.map(card => this._cardRetryTasks.get(card)).filter(Boolean);
+    const eligible = cards.filter(card => card.isConnected && card.dataset.origText
+      && !card.classList.contains("zrb-in-edit") && card.dataset.zrbTranslationState === "failed" && !this._cardRetryTasks.has(card));
+    if (!eligible.length) return Promise.all(existing);
+    // Reserve every selected card before the first await so repeated clicks or
+    // individual/bulk overlap cannot submit the same card twice.
+    const task = Promise.resolve().then(async () => {
+      let cache = {};
+      try { cache = await this.loadCache(reader); } catch (e) { Zotero.debug("[ReadingBilingual] Retry cache read: " + e); }
+      const groups = new Map();
+      for (const card of eligible) {
+        if (!card.isConnected || doc.defaultView?.closed) continue;
+        const text = card.dataset.origText;
+        if (this.isUsableTranslation(cache[text])) {
+          this.completeTranslationCard(card, reader, doc, text, this.cleanTypography(cache[text]));
+        } else {
+          const request = this._cardRetryRequests.get(card);
+          const key = (request ? "special:" : "paragraph:") + text;
+          if (!groups.has(key)) groups.set(key, { text, request, cards: [] });
+          groups.get(key).cards.push(card);
+        }
+      }
+      const ordinary = Array.from(groups.values()).filter(group => !group.request);
+      const batches = [];
+      for (let i = 0; i < ordinary.length; i += 5) batches.push(ordinary.slice(i, i + 5));
+      for (const group of groups.values()) if (group.request) batches.push([group]);
+      await this.runPool(batches, this.getConcurrency(), async batch => {
+        batch = batch.filter(group => group.cards.some(card => card.isConnected) && !doc.defaultView?.closed);
+        if (!batch.length) return;
+        const items = batch.flatMap(group => group.cards.map(card => ({ card, text: group.text })));
+        try {
+          const texts = batch.map(group => group.text);
+          const results = batch[0].request ? [await batch[0].request()]
+            : this.getProvider() === "gemini" ? await this.callGeminiBatch(texts, this.getApiKey(), this.getModel())
+              : await this.callOpenAIBatch(texts, this.getApiKey(), this.getModel(), this.getBaseUrl());
+          const expanded = batch.flatMap((group, index) => group.cards.map(() => results?.[index]));
+          const saved = this.applyTranslationResults(reader, doc, items, expanded);
+          if (Object.keys(saved).length) {
+            try { await this.saveCache(reader, saved); }
+            catch (e) { Zotero.debug("[ReadingBilingual] Retry cache write: " + e); }
+          }
+        } catch (error) {
+          for (const { card, text } of items) if (card.isConnected) this.markTranslationFailed(card, reader, doc, text, error);
+        }
+      });
+    }).catch(error => {
+      for (const card of eligible) if (card.isConnected && card.dataset.zrbTranslationState === "retrying") {
+        this.markTranslationFailed(card, reader, doc, card.dataset.origText, error);
+      }
+    }).finally(() => {
+      for (const card of eligible) {
+        this._cardRetryTasks.delete(card);
+        if (card.isConnected) this.syncTranslationRetry(card, reader, doc, card.dataset.origText);
+      }
+      this.refreshTranslationRetryBar(reader, doc);
+    });
+    for (const card of eligible) {
+      this._cardRetryTasks.set(card, task);
+      card.classList.add("translating");
+      card.dataset.zrbTranslationState = "retrying";
+      const button = card.querySelector(".zrb-retry-translation");
+      if (button) { button.disabled = true; button.textContent = "正在重试…"; }
+    }
+    this.refreshTranslationRetryBar(reader, doc);
+    return Promise.all([task, ...existing]);
   },
 
   attachCardActionHandlers(card, reader, doc, origText) {
-    if (!card || card._zrbHandlersAttached) return;
+    if (!card) return;
+    this.syncTranslationRetry(card, reader, doc, origText);
+    if (card.dataset.zrbTranslationState === "failed" || doc.getElementById("zrb-translation-retry-summary")) {
+      this.refreshTranslationRetryBar(reader, doc);
+    }
+    if (card._zrbHandlersAttached) return;
     card._zrbHandlersAttached = true;
 
     const startEdit = () => {
-      if (card.classList.contains("zrb-in-edit")) return;
+      if (card.classList.contains("zrb-in-edit") || card.classList.contains("translating")) return;
       card.classList.add("zrb-in-edit");
       const contentEl = card.querySelector(".zrb-card-content");
       const currentZh = contentEl ? ZRBTranslationRenderer.getSource(contentEl).trim() : card.textContent.trim();
@@ -2520,6 +3118,8 @@ var ReadingBilingual = {
           const newZh = textarea.value.trim();
           if (newZh && contentEl) {
             this.setTranslationContent(contentEl, newZh);
+            this.syncTranslationRetry(card, reader, doc, origText);
+            this.refreshTranslationRetryBar(reader, doc);
             const key = card.dataset.origText || origText;
             if (key) {
               await this.saveCache(reader, { [key]: newZh });
@@ -2619,6 +3219,7 @@ var ReadingBilingual = {
         card.style.transform = "translateY(-4px)";
         setTimeout(() => {
           card.remove();
+          this.refreshTranslationRetryBar(reader, doc);
         }, 200);
         if (key) {
           await this.deleteCacheEntry(reader, key);
@@ -2765,7 +3366,8 @@ var ReadingBilingual = {
       contentDoc,
       selectedText,
       `正在调用 ${pLabel} 翻译所选文本…`,
-      true
+      true,
+      targetEl
     );
 
     if (targetEl.tagName && targetEl.tagName.toLowerCase() === "li") {
@@ -2782,12 +3384,13 @@ var ReadingBilingual = {
 3. 仅输出最终的中文译文，绝对不要包含任何前缀、解释、引言、分析或 Markdown 格式包裹。`;
 
       const prompt = `请将以下学术论文内容精准翻译为中文：\n\n${selectedText}`;
+    this._cardRetryRequests.set(placeholder, () => this.callModelText(prompt, systemPrompt));
       const rawResult = await this.callModelText(prompt, systemPrompt);
       const cleanResult = this.cleanTypography(rawResult);
 
       placeholder.classList.remove("translating");
       const contentEl = placeholder.querySelector(".zrb-card-content");
-      if (contentEl) this.setTranslationContent(contentEl, cleanResult);
+      if (contentEl) this.setTranslationContent(contentEl, this.preserveHeadingNumber(targetEl, selectedText, cleanResult));
       placeholder.dataset.origText = selectedText;
 
       this.attachCardActionHandlers(placeholder, reader, contentDoc, selectedText);
@@ -2808,6 +3411,23 @@ var ReadingBilingual = {
     const outerDoc = reader._iframeWindow?.document || reader._iframe?.contentDocument || doc;
     const btn = outerDoc.getElementById("zrb-display-mode") || doc.getElementById("zrb-display-mode");
 
+    this.restoreReaderDisplayMode(doc);
+    this.syncToolbarDisplayMode(reader);
+
+    // Inject dynamic CSS styles into the target content document
+    let style = doc.getElementById("zotero-bilingual-style");
+    if (!style) {
+      style = doc.createElement("style");
+      style.id = "zotero-bilingual-style";
+      (doc.head || doc.body).appendChild(style);
+    }
+    style.textContent = this.getGeneratedCSS();
+    this.repairExistingHeadingNumbers(doc);
+
+    // Fold semantic SDT notes even when the user has not configured a model.
+    // This is a DOM-only presentation change and does not need translation.
+    this.prepareStructuredNotes(doc);
+
     // Say so once, up front, when no key is configured -- otherwise every
     // paragraph comes back as its own HTTP error card. A document that is
     // already fully cached still renders, so this only blocks new requests.
@@ -2824,18 +3444,6 @@ var ReadingBilingual = {
         return;
       }
     }
-
-    if (!doc.documentElement.dataset.zrbDisplayMode) this.applyReaderDisplayMode(doc, "bilingual");
-    this.syncToolbarDisplayMode(reader);
-
-    // Inject dynamic CSS styles into the target content document
-    let style = doc.getElementById("zotero-bilingual-style");
-    if (!style) {
-      style = doc.createElement("style");
-      style.id = "zotero-bilingual-style";
-      (doc.head || doc.body).appendChild(style);
-    }
-    style.textContent = this.getGeneratedCSS();
 
     // Setup selection context menu on document for right-click manual translation
     this.setupSelectionContextMenu(reader, doc);
@@ -2865,8 +3473,13 @@ var ReadingBilingual = {
       });
     }
 
+    // Use only SDT note types, source order, author-style text, and explicit
+    // back-references to identify metadata; preserve the original DOM position.
+    this.prepareStructuredNotes(doc);
+
     // Helper for cleanly inserting translation cards (foolproof against duplicate cards)
     const insertCard = (el, card) => {
+      this.prepareTranslationCard(el, card);
       if (el.tagName && el.tagName.toLowerCase() === "li") {
         el.querySelectorAll(".zotero-bilingual-card").forEach((c) => c.remove());
         el.appendChild(card);
@@ -2905,7 +3518,8 @@ var ReadingBilingual = {
 
     let candidateNodes = Array.from(doc.querySelectorAll(selector)).filter((el) => {
       if (el.classList.contains("zotero-bilingual-card") || el.classList.contains("zotero-bilingual-ref-notice")) return false;
-      if (el.closest(".zotero-bilingual-card, .zotero-bilingual-ref-notice")) return false;
+      if (el.closest(".zotero-bilingual-card, .zotero-bilingual-ref-notice, .zrb-pdf-figure-fallback, .zrb-manual-figure, .zrb-manual-editor, .zrb-manual-menu")) return false;
+      if (el.classList.contains("zrb-author-info-source") || el.closest(".sdt-note, details[data-zrb-note-kind='footnote']")) return false;
       if (el.tagName && el.tagName.toLowerCase() === "li" && el.querySelector("p, div")) return false;
       return true;
     });
@@ -2913,7 +3527,7 @@ var ReadingBilingual = {
     // Also pick up any missed figure/table captions from custom containers
     const extraCaptions = Array.from(doc.querySelectorAll("figcaption, caption, [class*='caption'], .sdt-caption, figure > p, figure > div"));
     for (const cap of extraCaptions) {
-      if (!candidateNodes.includes(cap) && !cap.closest(".zotero-bilingual-card, .zotero-bilingual-ref-notice")) {
+      if (!candidateNodes.includes(cap) && !cap.closest(".zotero-bilingual-card, .zotero-bilingual-ref-notice, .zrb-pdf-figure-fallback, .zrb-manual-figure, .zrb-manual-editor, .zrb-manual-menu")) {
         candidateNodes.push(cap);
       }
     }
@@ -3262,6 +3876,12 @@ var ReadingBilingual = {
       } else {
         hasCard = el.nextElementSibling?.classList?.contains("zotero-bilingual-card");
       }
+      if (hasCard) {
+        const existingCard = el.tagName?.toLowerCase() === "li"
+          ? el.querySelector(":scope > .zotero-bilingual-card")
+          : el.nextElementSibling;
+        this.prepareTranslationCard(el, existingCard);
+      }
 
       // The 15-character floor exists to drop page numbers and stray
       // fragments, but section headings are short by nature -- "10.Conclusion"
@@ -3308,6 +3928,7 @@ var ReadingBilingual = {
     );
 
     if (paragraphs.length === 0) {
+      this.prepareStructuredNotes(doc);
       if (isResume) {
         // Everything already has a card -- the resume found no gaps
         this.syncToolbarDisplayMode(reader);
@@ -3338,12 +3959,13 @@ var ReadingBilingual = {
     if (!forceReTranslate) {
       // Load from local cache first to avoid consuming API quota!
       const localCache = await this.loadCache(reader);
+      this.injectCachedMetadataTranslations(doc, localCache, reader);
       paragraphs.forEach((p) => {
         const text = paragraphText.get(p);
-        if (localCache[text]) {
+        if (this.isUsableTranslation(localCache[text])) {
           // Cache hit! Instant injection with 0 API cost
           const zh = this.cleanTypography(localCache[text]);
-          const card = this.createCardElement(reader, doc, text, zh, false);
+          const card = this.createCardElement(reader, doc, text, zh, false, p);
           insertCard(p, card);
           cachedCount++;
         } else {
@@ -3354,6 +3976,7 @@ var ReadingBilingual = {
 
       if (paragraphsToTranslate.length === 0) {
         // 100% cache hit!
+        this.prepareStructuredNotes(doc);
         this.syncToolbarDisplayMode(reader);
         const progress = new Zotero.ProgressWindow({ closeOnClick: true });
         progress.changeHeadline("沉浸式双语 (本地缓存)");
@@ -3394,6 +4017,7 @@ var ReadingBilingual = {
     progress.show();
 
     let completedCount = cachedCount;
+    let failedCount = 0;
     const newlyTranslatedMap = {};
     const batchSize = 5; // 5 paragraphs per API call
     const concurrency = this.getConcurrency();
@@ -3413,7 +4037,7 @@ var ReadingBilingual = {
         const placeholders = batch.map((p) => {
           const pLabel = provider === "gemini" ? "Gemini" : provider;
           const origText = paragraphText.get(p);
-          const card = this.createCardElement(reader, doc, origText, `正在调用 ${pLabel} 翻译…`, true);
+          const card = this.createCardElement(reader, doc, origText, `正在调用 ${pLabel} 翻译…`, true, p);
           insertCard(p, card);
           return { element: p, card: card, text: origText };
         });
@@ -3427,39 +4051,24 @@ var ReadingBilingual = {
             results = await this.callOpenAIBatch(texts, apiKey, model, baseUrl);
           }
 
-          results.forEach((res, idx) => {
-            if (placeholders[idx]) {
-              const rawResult = res || "[译文解析空，请重试]";
-              const textResult = this.cleanTypography(rawResult);
-              const card = placeholders[idx].card;
-              card.classList.remove("translating");
-              const contentEl = card.querySelector(".zrb-card-content");
-              if (contentEl) this.setTranslationContent(contentEl, textResult);
-              else card.textContent = textResult;
-              this.attachCardActionHandlers(card, reader, doc, placeholders[idx].text);
-              newlyTranslatedMap[placeholders[idx].text] = textResult;
-              batchResults[placeholders[idx].text] = textResult;
-              completedCount++;
-            }
-          });
+          Object.assign(batchResults, this.applyTranslationResults(reader, doc, placeholders, results));
+          Object.assign(newlyTranslatedMap, batchResults);
+          const succeeded = placeholders.filter(item => item.card.dataset.zrbTranslationState === "complete").length;
+          completedCount += succeeded;
+          failedCount += placeholders.length - succeeded;
 
           // Flush this batch immediately. Saving only at the very end meant an
           // interrupted run (closed tab, quit Zotero, network drop) threw away
           // every paragraph it had already paid for.
           if (Object.keys(batchResults).length > 0) {
-            await this.saveCache(reader, batchResults);
+            try { await this.saveCache(reader, batchResults); }
+            catch (e) { Zotero.debug("[ReadingBilingual] Batch cache write: " + e); }
           }
         } catch (err) {
           placeholders.forEach((item) => {
-            const card = item.card;
-            card.classList.remove("translating");
-            card.style.borderLeftColor = "#ef4444";
-            const contentEl = card.querySelector(".zrb-card-content");
-            const errMsg = `[翻译失败: ${err.message}]`;
-            if (contentEl) this.setTranslationContent(contentEl, errMsg, true);
-            else card.textContent = errMsg;
-            this.attachCardActionHandlers(card, reader, doc, item.text);
+            this.markTranslationFailed(item.card, reader, doc, item.text, err);
           });
+          failedCount += placeholders.length;
         }
 
         const pct = Math.round((completedCount / totalAll) * 100);
@@ -3479,22 +4088,26 @@ var ReadingBilingual = {
         // The cache file was already deleted at the start of a forced
         // re-translation, so never overwrite here: doing so discarded the
         // TOC / roadmap / table entries written earlier in this same run.
-        await this.saveCache(reader, newlyTranslatedMap, false);
+        try { await this.saveCache(reader, newlyTranslatedMap, false); }
+        catch (e) { Zotero.debug("[ReadingBilingual] Translation cache write: " + e); }
       }
 
       const refSummary = skippedReferencesCount > 0 ? `，已自动排除 ${skippedReferencesCount} 条参考文献` : "";
-      const finishMsg = forceReTranslate
+      const finishMsg = failedCount ? `已完成 ${completedCount} / ${totalAll} 段，${failedCount} 段失败；可点击“重试本段”或“只重试失败段落”`
+        : forceReTranslate
         ? `重新翻译完成！已按最新 Prompt 刷新全部 ${completedCount} 个段落${refSummary} (本地缓存已更新)`
         : `完成！已成功注入 ${completedCount} 个段落双语对照${refSummary} (已缓存至PDF目录)`;
       progressItem.setText(finishMsg);
-      progressItem.setProgress(100);
+      progressItem.setProgress(Math.round(completedCount / totalAll * 100));
       progress.startCloseTimer(3500);
 
       if (btn) {
-        btn.classList.remove("translating", "error");
-        btn.classList.add("success", "active");
+        btn.classList.remove("translating", "error", "success");
+        btn.classList.add(failedCount ? "error" : "success", "active");
       }
+      this.prepareStructuredNotes(doc);
       this.syncToolbarDisplayMode(reader);
+      this.refreshTranslationRetryBar(reader, doc);
       if (btn) btn.title = "显示内容：单击选择原文、对照或仅译文";
 
       setTimeout(() => {
@@ -3507,7 +4120,8 @@ var ReadingBilingual = {
         btn.classList.remove("translating", "success", "active");
         btn.classList.add("error");
       }
-      if (btn) btn.title = "翻译中断；可通过工具菜单或 Ctrl+Shift+T 重新翻译";
+      if (btn) btn.title = "翻译中断；成功译文已保留，可重试失败段落";
+      this.prepareStructuredNotes(doc);
       this.syncToolbarDisplayMode(reader);
     }
   },
@@ -3523,16 +4137,15 @@ var ReadingBilingual = {
       }
     }
     const hasEmpty = results.some((r) => !r);
-    if (hasEmpty) {
+    const numbered = /(?:【P\d+】|\[P\d+\]|(?:^|\n)P\d+[:：])/.test(rawText);
+    if (hasEmpty && !numbered) {
       const cleanLines = rawText
         .split(/\n{2,}/)
         .map((s) => s.replace(/^(?:【P\d+】|\[P\d+\]|P\d+[:：])\s*/, "").trim())
         .filter(Boolean);
-      for (let i = 0; i < count; i++) {
-        if (!results[i] && cleanLines[i]) {
-          results[i] = cleanLines[i];
-        }
-      }
+      // A numbered partial reply has known gaps: never shift later results
+      // into them. Unnumbered replies are safe only with an exact row count.
+      if (cleanLines.length === count) cleanLines.forEach((line, i) => { results[i] = line; });
     }
     return results;
   },
@@ -3805,7 +4418,7 @@ var ReadingBilingual = {
     }
 
     const cache = await this.loadCache(reader);
-    let zh = (!forceReTranslate && cache[text]) ? this.cleanTypography(cache[text]) : null;
+    let zh = (!forceReTranslate && this.isUsableTranslation(cache[text])) ? this.cleanTypography(cache[text]) : null;
 
     const card = this.createCardElement(reader, doc, text, zh || "正在整体翻译表格…", !zh);
     card.classList.add("zotero-bilingual-table-card");
@@ -3834,6 +4447,7 @@ var ReadingBilingual = {
 【表格原文】：
 ${text}
 `;
+    this._cardRetryRequests.set(card, () => this.callModelText(prompt));
 
     try {
       const raw = await this.callModelText(prompt);
