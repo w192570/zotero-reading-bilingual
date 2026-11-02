@@ -276,3 +276,12 @@ python tools/check-delivery.py --xpi "zotero-reading-bilingual-1.6.13-figure-lay
 - 自动验证：`npm test` 104/104；`npm run test:browser` 31/31。浏览器套件首次并行运行有 3 项既有超时，单独复跑均通过，随后完整套件通过。真实 Gecko 153 + Zotero Reader/PDF.js：7 项通过、2 项因环境未配置而跳过；Figure 18 实际跨页 PDF 裁剪用例通过。
 - 新包 `zotero-reading-bilingual-1.6.13-figure-zoom-interaction-test.xpi`：79 个运行文件，1,119,133 字节，SHA-256 `8d48ab4bd2e0322f3de868a9a7e6d04ed322a069efbef751c84487e4538fd150`。语法、XPI 文件清单及插件目录副本校验通过；保留上一包 `zotero-reading-bilingual-1.6.13-figure-editor-usability-test.xpi` 回退。正式版本仍为 1.6.13。
 - 日常 Windows Zotero 桌面交互验收仍待完成；自动化结果不能替代桌面验收。
+
+## 本轮调整：图片预览定位、公式图表裁剪与段落重译（2026-11-02）
+
+- 放大预览原来只把预览容器放在屏幕中央，媒体仍从容器顶部排列；现在单图在预览可用区域居中，多图作为有序组展示，并清除克隆媒体继承的浮动和定位样式。缩放和窗口变化后，裁剪按钮会按当前命中的具体图像边界重算，固定在图像右上角；滚动时仅在指针仍位于图像或按钮上时跟随，关闭视图会移除新增的窗口监听。
+- 裁剪候选识别现在允许 SDT 数学块中的独立图片/SVG/画布，以及图表块或图表容器中的图形叶节点；替换目标仍是该媒体节点，不会把公式块、表格或正文容器作为隐藏对象。覆盖了公式 SVG、图表画布和无图注、链接嵌套的高窄图片。
+- 每个译文卡片右上角增加“重译本段”操作，沿用现有并发限制和模型适配，只发送当前段落，并跳过该段缓存读取；成功后更新这段译文及缓存，不调用全文翻译流程。
+- 自动验证：单元测试 104/104；Firefox 浏览器套件串行运行 34/34；Firefox 153 + 本机 Zotero Reader/PDF.js 的 Gecko 套件 7 项通过、2 项因未配置独立 Zotero 安装目录而跳过。Figure 18 跨页 PDF 原生渲染/坐标用例通过。并行运行时出现资源竞争型超时，串行完整回归通过。
+- 静态交付检查：42 个 JS 文件语法通过；XPI 79 个运行文件与当前源码及交付副本逐项一致。测试包 `zotero-reading-bilingual-1.6.13-image-recrop-retranslate-test.xpi` 位于仓库根目录和 `F:\111office\zotero\plugins`，大小 1,119,639 字节，SHA-256 `ce55dd998df096d472b5b83487110fb03317dd5a68a27636eb6548f16810184e`。保留上一包 `zotero-reading-bilingual-1.6.13-figure-zoom-interaction-test.xpi` 作为回退；版本仍为 1.6.13。
+- 用户提供的第 4、5 张截图没有对应 PDF/SDT 文件，本轮通过带链接的嵌套高窄图片和不同 SDT 媒体类型覆盖候选路径，尚不能确认与截图中的具体来源结构完全相同。日常 Zotero 桌面安装及这两张图对应 PDF 的验收仍待完成。

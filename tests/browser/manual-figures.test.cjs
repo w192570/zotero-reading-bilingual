@@ -143,6 +143,59 @@ test('enlarged images have explicit zoom and close controls while clicking the i
   assert.equal(await lightbox.count(), 0);
 });
 
+test('lightbox centers narrow images and formula/chart renderings can be recropped', async t => {
+  const { page } = await fixture(t);
+  await page.locator('#sdt-content').evaluate(root => {
+    const wrapper = document.createElement('div'); wrapper.id = 'odd-image'; wrapper.dataset.refPath = '5';
+    wrapper.innerHTML = '<a href="#original"><span><img alt="unusual tall figure" width="70" height="260" src="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2270%22 height=%22260%22%3E%3Crect width=%2270%22 height=%22260%22 fill=%22%23888%22/%3E%3C/svg%3E"></span></a>';
+    root.append(wrapper);
+  });
+  await page.locator('#formula').evaluate(el => {
+    el.dataset.refPath = '3';
+    el.innerHTML = '<svg id="formula-svg" width="80" height="40"><text x="2" y="25">x+y=z</text></svg>';
+  });
+  await page.locator('#orphan').evaluate(el => { el.dataset.refPath = '4'; el.innerHTML = '<canvas id="chart-canvas" width="60" height="240"></canvas>'; });
+  await page.evaluate(() => {
+    const state = ZRBManualFigures.states.get(document);
+    state.entries.push(
+      { ref: [3], block: { type: 'math', anchor: { pageRects: [[0, 20, 20, 180, 90]] } } },
+      { ref: [4], block: { type: 'chart', anchor: { pageRects: [[0, 20, 20, 180, 400]] } } },
+      { ref: [5], block: { type: 'image', anchor: { pageRects: [[0, 20, 20, 120, 280]] } } },
+    );
+  });
+  await page.dblclick('#chart-canvas');
+  const image = page.locator('.zrb-image-lightbox img');
+  const box = await image.boundingBox();
+  const overlay = await page.locator('.zrb-image-lightbox').boundingBox();
+  assert.ok(Math.abs((box.x + box.width / 2) - (overlay.x + overlay.width / 2)) < 3,
+    'a narrow image is centered in the available preview area');
+  await page.keyboard.press('Escape');
+  await page.locator('#formula-svg').evaluate(el => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })));
+  await page.getByRole('button', { name: '裁剪／修正图片', exact: true }).click();
+  await page.waitForFunction(() => !!ZRBManualFigures.states.get(document).editor?.page);
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await page.locator('#odd-image img').evaluate(el => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })));
+  await page.getByRole('button', { name: '裁剪／修正图片', exact: true }).click();
+  await page.waitForFunction(() => !!ZRBManualFigures.states.get(document).editor?.page);
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+});
+
+test('crop control follows the image corner after viewport zoom/layout changes', async t => {
+  const { page } = await fixture(t);
+  const image = page.locator('#native img');
+  await image.hover();
+  const button = page.locator('.zrb-figure-edit-control');
+  const distance = async () => {
+    const imageBox = await image.boundingBox(), controlBox = await button.boundingBox();
+    return { x: Math.abs((controlBox.x + controlBox.width) - imageBox.x - imageBox.width), y: Math.abs(controlBox.y - imageBox.y) };
+  };
+  await page.evaluate(() => { document.querySelector('#native img').style.transform = 'scale(1.25)'; });
+  await page.setViewportSize({ width: 1000, height: 850 });
+  await page.waitForTimeout(80);
+  const result = await distance();
+  assert.ok(result.x < 18 && result.y < 18, 'control remains pinned to the image top-right after visual scaling');
+});
+
 test('crop action reports why it cannot open instead of silently doing nothing', async t => {
   const { page } = await fixture(t);
   await page.evaluate(() => { ZRBManualFigures.states.get(document).fingerprint = null; });

@@ -88,9 +88,15 @@ var ZRBManualFigures = {
     if (!root) return [];
     const nodes = [];
     for (let node of root.querySelectorAll('figure.sdt-image,figure.sdt-source-crop,img,svg,canvas')) {
-      if (node.closest('.zrb-pdf-figure-fallback,.zrb-manual-figure,.zotero-bilingual-card,table,math,.sdt-math,pre,code')) continue;
+      const mediaLeaf = node.matches('img,svg,canvas');
       const block = this.entry(state, node.closest('[data-ref-path]')?.dataset.refPath)?.block;
-      if (block && ['math', 'table', 'caption', 'reference', 'note'].includes(block.type)) continue;
+      const mathMedia = mediaLeaf && (node.closest('math,.sdt-math') || block?.type === 'math');
+      const chartMedia = mediaLeaf && (node.closest('.sdt-chart,[data-chart]') || block?.type === 'chart');
+      if (node.closest('.zrb-pdf-figure-fallback,.zrb-manual-figure,.zotero-bilingual-card,pre,code')) continue;
+      if (node.closest('table') && !chartMedia && !mathMedia) continue;
+      if (node.closest('math,.sdt-math') && !mathMedia) continue;
+      if (block && ['table', 'caption', 'reference', 'note'].includes(block.type) && !chartMedia && !mathMedia) continue;
+      if (block?.type === 'math' && !mathMedia) continue;
       const figure = node.closest('figure.sdt-image,figure.sdt-source-crop');
       if (figure && !figure.querySelector('p,figcaption,table,math,.sdt-math,.zotero-bilingual-card,a:not(:has(img))')) node = figure;
       // Never hide a source figure containing prose/captions/links as a unit.
@@ -552,19 +558,24 @@ var ZRBManualFigures = {
       const fallback = target.closest('.zrb-pdf-figure-fallback'); if (fallback) return fallback;
       return this.nativeElements(state).find(el => el === target || el.contains(target)) || null;
     };
+    const placeControl = element => {
+      if (!element?.isConnected) { control.hidden = true; return; }
+      const r = this.graphicRect(element, state.hoveredTarget || element);
+      const view = doc.defaultView, width = view?.innerWidth || 900, height = view?.innerHeight || 700;
+      if (!r || r.right <= 0 || r.bottom <= 0 || r.left >= width || r.top >= height) { control.hidden = true; return; }
+      const controlWidth = Math.max(56, control.getBoundingClientRect().width || 56);
+      const left = Math.min(Math.max(4, r.right - controlWidth), width - controlWidth - 4);
+      const top = Math.min(Math.max(4, r.top + 4), height - 30);
+      control.style.left = left + 'px'; control.style.top = top + 'px'; control.hidden = false;
+    };
+    state.placeControl = placeControl;
     const show = event => {
       if (event.target.closest?.('.zrb-figure-edit-control')) { this.cancelControlHide(state); return; }
       if (event.target.closest?.('.zrb-figure-edit-inline')) return;
       const element = graphic(event.target);
       if (!element) { if (!control.contains(event.target)) this.scheduleControlHide(state); return; }
       this.cancelControlHide(state);
-      const r = this.graphicRect(element, event.target); state.hovered = element;
-      const view = doc.defaultView, width = view?.innerWidth || 900, height = view?.innerHeight || 700;
-      const controlWidth = Math.max(56, control.getBoundingClientRect().width || 56);
-      const left = Math.min(Math.max(r.left + 4, r.right - controlWidth - 4), width - controlWidth - 8);
-      const top = Math.min(Math.max(4, r.top + 4), Math.max(4, Math.min(r.bottom - 30, height - 30)));
-      control.style.left = Math.max(4, left) + 'px';
-      control.style.top = top + 'px'; control.hidden = false;
+      state.hovered = element; state.hoveredTarget = event.target; placeControl(element);
     };
     const edit = async element => {
       state.menu?.remove(); state.menu = null;
@@ -590,7 +601,8 @@ var ZRBManualFigures = {
       overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483002;background:#000d;display:grid;place-items:center;padding:48px 20px 20px;cursor:default';
       const toolbar = doc.createElement('div'); toolbar.style.cssText = 'position:absolute;right:16px;top:12px;display:flex;gap:8px;align-items:center;color:white;font:14px sans-serif';
       const zoomLabel = doc.createElement('span'); zoomLabel.setAttribute('aria-live', 'polite');
-      const content = doc.createElement('div'); content.style.cssText = 'width:94vw;height:90vh;overflow:auto;display:grid;gap:12px;justify-items:center;align-content:start;cursor:grab';
+      const content = doc.createElement('div'); content.style.cssText = 'width:94vw;height:90vh;overflow:auto;display:grid;place-items:center;cursor:grab';
+      const stack = doc.createElement('div'); stack.style.cssText = 'width:max-content;max-width:100%;height:max-content;display:grid;justify-items:center;align-content:center;gap:12px;margin:auto';
       let media = [];
       if (element.matches?.('img,svg,canvas')) media = [element];
       else media = Array.from(element.querySelectorAll('img,svg,canvas'));
@@ -605,9 +617,13 @@ var ZRBManualFigures = {
         const size = { width: rect.width * fit, height: rect.height * fit };
         node.style?.setProperty('max-width', 'none', 'important'); node.style?.setProperty('max-height', 'none', 'important');
         node.style?.setProperty('width', size.width + 'px', 'important'); node.style?.setProperty('height', size.height + 'px', 'important');
-        node.style?.setProperty('object-fit', 'contain', 'important'); content.append(node); scaled.push({ node, size });
+        node.style?.setProperty('object-fit', 'contain', 'important');
+        node.style?.setProperty('display', 'block', 'important'); node.style?.setProperty('position', 'static', 'important');
+        node.style?.setProperty('float', 'none', 'important'); node.style?.setProperty('margin', '0 auto', 'important');
+        stack.append(node); scaled.push({ node, size });
       }
-      if (!content.childNodes.length) return;
+      if (!stack.childNodes.length) return;
+      content.append(stack);
       let zoom = 1;
       const updateZoom = value => {
         zoom = Math.min(3, Math.max(.5, Math.round(value * 100) / 100));
@@ -666,9 +682,20 @@ var ZRBManualFigures = {
     };
     const dismiss = event => { if (!state.menu?.contains(event.target)) { state.menu?.remove(); state.menu = null; } };
     const key = event => { if (event.key === 'Escape') { state.menu?.remove(); state.menu = null; state.editor?.close(); } };
-    const scroll = () => { this.cancelControlHide(state); control.hidden = true; this.scheduleVisible(state); };
+    const scroll = () => {
+      this.cancelControlHide(state);
+      if (state.hovered?.matches(':hover') || control.matches(':hover')) placeControl(state.hovered);
+      else control.hidden = true;
+      this.scheduleVisible(state);
+    };
+    const resize = () => {
+      if (state.hovered && (!control.hidden || state.hovered.matches(':hover') || control.matches(':hover'))) placeControl(state.hovered);
+      else control.hidden = true;
+    };
     state.listeners = [['pointerover', show], ['focusin', show], ['dblclick', doubleClick], ['contextmenu', menu], ['pointerdown', dismiss], ['pointerover', scopeHover], ['pointerout', clearScopeHover], ['keydown', key], ['scroll', scroll]];
     for (const [name, listener] of state.listeners) doc.addEventListener(name, listener, true);
+    doc.defaultView?.addEventListener('resize', resize);
+    state.onResize = resize;
     state.onPageHide = () => this.dispose(state);
     doc.defaultView?.addEventListener('pagehide', state.onPageHide, { once: true });
   },
@@ -692,6 +719,7 @@ var ZRBManualFigures = {
       if (state.visibilityTimer) clearTimeout(state.visibilityTimer);
       this.cancelControlHide(state); if (state.actionFeedbackTimer) clearTimeout(state.actionFeedbackTimer); state.actionFeedback?.remove();
       for (const [name, listener] of state.listeners || []) state.doc.removeEventListener(name, listener, true);
+      state.doc.defaultView?.removeEventListener('resize', state.onResize);
       state.doc.defaultView?.removeEventListener('pagehide', state.onPageHide);
       for (const id of state.active.keys()) this.unmount(state, id);
     } catch (e) {}

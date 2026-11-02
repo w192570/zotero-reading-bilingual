@@ -2846,6 +2846,14 @@ var ReadingBilingual = {
     const actions = doc.createElement("div");
     actions.className = "zrb-card-actions";
 
+    const retranslateBtn = doc.createElement("button");
+    retranslateBtn.type = "button";
+    retranslateBtn.className = "zrb-card-action-btn zrb-btn-retranslate";
+    retranslateBtn.title = "重新翻译本段";
+    retranslateBtn.setAttribute("aria-label", "重新翻译本段");
+    retranslateBtn.textContent = "↻ 重译本段";
+    actions.appendChild(retranslateBtn);
+
     const editBtn = doc.createElement("button");
     editBtn.type = "button";
     editBtn.className = "zrb-card-action-btn zrb-btn-edit";
@@ -2992,10 +3000,12 @@ var ReadingBilingual = {
     return task;
   },
 
-  retryTranslationCards(reader, doc, cards) {
+  retryTranslationCards(reader, doc, cards, { force = false } = {}) {
     const existing = cards.map(card => this._cardRetryTasks.get(card)).filter(Boolean);
     const eligible = cards.filter(card => card.isConnected && card.dataset.origText
-      && !card.classList.contains("zrb-in-edit") && card.dataset.zrbTranslationState === "failed" && !this._cardRetryTasks.has(card));
+      && !card.classList.contains("zrb-in-edit")
+      && (force ? ["complete", "failed"].includes(card.dataset.zrbTranslationState) : card.dataset.zrbTranslationState === "failed")
+      && !this._cardRetryTasks.has(card));
     if (!eligible.length) return Promise.all(existing);
     // Reserve every selected card before the first await so repeated clicks or
     // individual/bulk overlap cannot submit the same card twice.
@@ -3006,7 +3016,7 @@ var ReadingBilingual = {
       for (const card of eligible) {
         if (!card.isConnected || doc.defaultView?.closed) continue;
         const text = card.dataset.origText;
-        if (this.isUsableTranslation(cache[text])) {
+        if (!force && this.isUsableTranslation(cache[text])) {
           this.completeTranslationCard(card, reader, doc, text, this.cleanTypography(cache[text]));
         } else {
           const request = this._cardRetryRequests.get(card);
@@ -3055,6 +3065,8 @@ var ReadingBilingual = {
       card.dataset.zrbTranslationState = "retrying";
       const button = card.querySelector(".zrb-retry-translation");
       if (button) { button.disabled = true; button.textContent = "正在重试…"; }
+      const forceButton = card.querySelector(".zrb-btn-retranslate");
+      if (forceButton) { forceButton.disabled = true; forceButton.textContent = "正在翻译…"; }
     }
     this.refreshTranslationRetryBar(reader, doc);
     return Promise.all([task, ...existing]);
@@ -3168,6 +3180,21 @@ var ReadingBilingual = {
       editBtn.onclick = (e) => {
         e.stopPropagation();
         startEdit();
+      };
+    }
+
+    const retranslateBtn = card.querySelector(".zrb-btn-retranslate");
+    if (retranslateBtn) {
+      retranslateBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (card.dataset.zrbTranslationState === "retrying") return;
+        retranslateBtn.disabled = true;
+        retranslateBtn.textContent = "正在翻译…";
+        this.retryTranslationCards(reader, doc, [card], { force: true }).finally(() => {
+          if (!retranslateBtn.isConnected) return;
+          retranslateBtn.disabled = false;
+          retranslateBtn.textContent = "↻ 重译本段";
+        });
       };
     }
 
