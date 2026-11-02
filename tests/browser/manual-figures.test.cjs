@@ -23,6 +23,9 @@ async function fixture(t) {
   for (const file of ['figure-cache.js', 'pdf-figure-fallback.js', 'manual-figure-store.js', 'manual-figures.js', 'manual-figure-editor.js', 'reading-bilingual.js']) {
     await page.addScriptTag({ path: path.resolve(__dirname, '../../content/scripts', file) });
   }
+  await page.locator('#failed .zrb-figure-edit-inline').evaluate(button => button.addEventListener('click', event => {
+    event.preventDefault(); event.stopPropagation(); ZRBManualFigures.openForElement(button.closest('.zrb-pdf-figure-fallback'));
+  }));
   await page.evaluate(async () => {
     const storage = new Map();
     window.Zotero = { debug() {}, logError() {}, Prefs: { get() {} } };
@@ -109,6 +112,43 @@ test('native orphan vector figures expose the same editor, support rotated zoome
   assert.equal(await page.locator('.zrb-manual-editor,.zrb-manual-figure,[data-zrb-manual-hidden]').count(), 0);
   assert.equal(await page.locator('#orphan').isVisible(), true);
   assert.deepEqual(errors, []);
+});
+
+test('hover crop control remains reachable from a graphic whose visual content is narrower than its host', async t => {
+  const { page } = await fixture(t);
+  await page.locator('#native').evaluate(el => { el.style.width = '560px'; el.querySelector('img').style.width = '400px'; });
+  await page.locator('#native img').hover();
+  const button = page.locator('.zrb-figure-edit-control');
+  const box = await button.boundingBox();
+  assert.ok(box, 'hovering a native graphic reveals the crop control');
+  const imageBox = await page.locator('#native img').boundingBox();
+  assert.ok(box.x + box.width > imageBox.x && box.x < imageBox.x + imageBox.width,
+    'crop control is anchored to the visible image rather than the wider SDT host');
+  assert.ok(box.y + box.height > imageBox.y && box.y < imageBox.y + imageBox.height);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+  assert.equal(await button.isVisible(), true, 'moving to the control must not hide it while crossing the host gap');
+  await button.click();
+  await page.waitForFunction(() => !!ZRBManualFigures.states.get(document).editor?.page);
+});
+
+test('enlarged images have explicit zoom and close controls while clicking the image keeps it open', async t => {
+  const { page } = await fixture(t);
+  await page.dblclick('#native img');
+  const lightbox = page.getByRole('dialog', { name: '图片放大预览' });
+  await page.getByRole('button', { name: '放大图片' }).click();
+  assert.equal(await lightbox.getAttribute('data-zoom'), '1.25');
+  await page.locator('.zrb-image-lightbox img').click();
+  assert.equal(await lightbox.count(), 1, 'clicking the image should not dismiss the preview');
+  await page.getByRole('button', { name: '关闭图片预览' }).click();
+  assert.equal(await lightbox.count(), 0);
+});
+
+test('crop action reports why it cannot open instead of silently doing nothing', async t => {
+  const { page } = await fixture(t);
+  await page.evaluate(() => { ZRBManualFigures.states.get(document).fingerprint = null; });
+  await page.locator('#failed .zrb-figure-edit-inline').click();
+  await page.waitForFunction(() => !!document.querySelector('[data-zrb-action-feedback]'));
+  assert.match(await page.locator('[data-zrb-action-feedback]').textContent(), /无法读取 PDF 指纹/);
 });
 
 test('failure boxes support cross-page selections, order changes, scope confirmation, all display modes and original restore', async t => {

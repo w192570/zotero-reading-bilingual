@@ -735,6 +735,10 @@ var ZRBPDFFigureFallback = {
     edit.type = 'button'; edit.className = 'zrb-figure-edit-inline'; edit.textContent = '裁剪／修正';
     edit.title = '从原 PDF 重新选择该图片区域';
     edit.style.cssText = 'font:inherit;margin-inline-start:10px;padding:2px 7px;cursor:pointer';
+    edit.addEventListener('click', event => {
+      event.preventDefault(); event.stopPropagation();
+      if (typeof ZRBManualFigures !== 'undefined') ZRBManualFigures.openForElement(figure);
+    });
     label.append(edit);
     const button = doc.createElement('button');
     button.type = 'button';

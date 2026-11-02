@@ -488,6 +488,54 @@ var ZRBManualFigures = {
       }
     }, 120);
   },
+  actionFeedback(state, message, isError = false) {
+    const doc = state.doc;
+    let node = state.actionFeedback;
+    if (!node?.isConnected) {
+      node = doc.createElement('div'); node.dataset.zrbActionFeedback = 'true';
+      node.setAttribute('role', isError ? 'alert' : 'status');
+      node.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2147483005;max-width:min(90vw,720px);padding:9px 14px;border-radius:6px;background:Canvas;color:CanvasText;box-shadow:0 2px 12px #0005;font:14px sans-serif';
+      doc.body.append(node); state.actionFeedback = node;
+    }
+    node.setAttribute('role', isError ? 'alert' : 'status');
+    node.textContent = message;
+    if (state.actionFeedbackTimer) clearTimeout(state.actionFeedbackTimer);
+    state.actionFeedbackTimer = setTimeout(() => { node.remove(); state.actionFeedback = null; state.actionFeedbackTimer = null; }, isError ? 9000 : 1800);
+  },
+  graphicRect(element, target) {
+    const media = target?.closest?.('img,svg,canvas');
+    const rectOf = node => {
+      const r = node?.getBoundingClientRect?.();
+      return r && r.width > 0 && r.height > 0 ? r : null;
+    };
+    if (media && (media === element || element.contains(media))) {
+      const rect = rectOf(media); if (rect) return rect;
+    }
+    const children = element.matches?.('img,svg,canvas') ? [element] : Array.from(element.querySelectorAll?.('img,svg,canvas') || []);
+    const rects = children.map(rectOf).filter(Boolean);
+    if (rects.length === 1) return rects[0];
+    if (rects.length > 1) return {
+      left: Math.min(...rects.map(r => r.left)), right: Math.max(...rects.map(r => r.right)),
+      top: Math.min(...rects.map(r => r.top)), bottom: Math.max(...rects.map(r => r.bottom)),
+    };
+    return rectOf(element) || element.getBoundingClientRect();
+  },
+  cancelControlHide(state) {
+    if (state.controlHideTimer) clearTimeout(state.controlHideTimer);
+    state.controlHideTimer = null;
+  },
+  scheduleControlHide(state) {
+    this.cancelControlHide(state);
+    state.controlHideTimer = setTimeout(() => {
+      state.controlHideTimer = null;
+      if (!state.control?.matches(':hover') && !state.hovered?.matches(':hover')) state.control.hidden = true;
+    }, 320);
+  },
+  openForElement(element) {
+    const state = element?.ownerDocument && this.states.get(element.ownerDocument);
+    if (!state?.openEditor) return Promise.resolve(false);
+    return state.openEditor(element);
+  },
   installControls(state) {
     const doc = state.doc;
     const style = doc.createElement('style');
@@ -496,6 +544,8 @@ var ZRBManualFigures = {
     const control = doc.createElement('button'); control.type = 'button'; control.className = 'zrb-figure-edit-control';
     control.textContent = '裁剪'; control.title = '裁剪／修正图片'; control.hidden = true;
     doc.body.append(control); state.control = control;
+    control.addEventListener('pointerenter', () => this.cancelControlHide(state));
+    control.addEventListener('pointerleave', () => this.scheduleControlHide(state));
     const graphic = target => {
       if (!target?.closest || target.closest('.zrb-manual-editor,.zrb-manual-menu,.zrb-figure-edit-control,.zotero-bilingual-card')) return null;
       const manual = target.closest('.zrb-manual-figure'); if (manual) return manual;
@@ -503,49 +553,87 @@ var ZRBManualFigures = {
       return this.nativeElements(state).find(el => el === target || el.contains(target)) || null;
     };
     const show = event => {
+      if (event.target.closest?.('.zrb-figure-edit-control')) { this.cancelControlHide(state); return; }
       if (event.target.closest?.('.zrb-figure-edit-inline')) return;
       const element = graphic(event.target);
-      if (!element) { if (!control.contains(event.target)) control.hidden = true; return; }
-      const r = element.getBoundingClientRect(); state.hovered = element;
-      control.style.left = Math.max(0, Math.min((doc.defaultView?.innerWidth || 900) - 65, r.right - 60)) + 'px';
-      control.style.top = Math.max(0, r.top + 4) + 'px'; control.hidden = false;
+      if (!element) { if (!control.contains(event.target)) this.scheduleControlHide(state); return; }
+      this.cancelControlHide(state);
+      const r = this.graphicRect(element, event.target); state.hovered = element;
+      const view = doc.defaultView, width = view?.innerWidth || 900, height = view?.innerHeight || 700;
+      const controlWidth = Math.max(56, control.getBoundingClientRect().width || 56);
+      const left = Math.min(Math.max(r.left + 4, r.right - controlWidth - 4), width - controlWidth - 8);
+      const top = Math.min(Math.max(4, r.top + 4), Math.max(4, Math.min(r.bottom - 30, height - 30)));
+      control.style.left = Math.max(4, left) + 'px';
+      control.style.top = top + 'px'; control.hidden = false;
     };
     const edit = async element => {
       state.menu?.remove(); state.menu = null;
+      this.actionFeedback(state, '正在打开图片裁剪窗口…');
       try {
         await state.ready;
         if (!this.live(state)) return;
         if (!state.fingerprint) throw new Error(state.error || '无法读取 PDF 指纹');
         ZRBManualFigureEditor.open(state, this.targetFor(state, element));
-      } catch (error) { this.report(state, error); control.title = state.error; }
+        state.actionFeedback?.remove(); state.actionFeedback = null;
+        return true;
+      } catch (error) {
+        this.report(state, error); control.title = state.error;
+        this.actionFeedback(state, '无法打开裁剪窗口：' + state.error, true);
+        return false;
+      }
     };
-    const directEdit = event => {
-      const button = event.target.closest?.('.zrb-figure-edit-inline');
-      if (!button) return;
-      event.preventDefault(); event.stopPropagation(); edit(button.closest('.zrb-pdf-figure-fallback'));
-    };
-    control.addEventListener('click', () => edit(state.hovered));
+    state.openEditor = edit;
+    control.addEventListener('click', () => { if (state.hovered) edit(state.hovered, control); });
     const enlarge = element => {
       const overlay = doc.createElement('div'); overlay.className = 'zrb-image-lightbox';
       overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-label', '图片放大预览');
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483002;background:#000d;display:grid;place-items:center;padding:28px;cursor:zoom-out';
-      const content = doc.createElement('div'); content.style.cssText = 'max-width:100%;max-height:100%;overflow:auto;display:grid;gap:12px;justify-items:center;cursor:auto';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483002;background:#000d;display:grid;place-items:center;padding:48px 20px 20px;cursor:default';
+      const toolbar = doc.createElement('div'); toolbar.style.cssText = 'position:absolute;right:16px;top:12px;display:flex;gap:8px;align-items:center;color:white;font:14px sans-serif';
+      const zoomLabel = doc.createElement('span'); zoomLabel.setAttribute('aria-live', 'polite');
+      const content = doc.createElement('div'); content.style.cssText = 'width:94vw;height:90vh;overflow:auto;display:grid;gap:12px;justify-items:center;align-content:start;cursor:grab';
       let media = [];
       if (element.matches?.('img,svg,canvas')) media = [element];
       else media = Array.from(element.querySelectorAll('img,svg,canvas'));
+      const scaled = [];
       for (const source of media) {
         let node;
         if (source.matches('canvas')) { node = doc.createElement('img'); try { node.src = source.toDataURL('image/png'); } catch (e) { continue; } }
         else node = source.cloneNode(true);
-        node.style?.setProperty('max-width', 'min(94vw, 1800px)', 'important');
-        node.style?.setProperty('max-height', '90vh', 'important');
-        node.style?.setProperty('width', 'auto', 'important'); node.style?.setProperty('height', 'auto', 'important');
-        node.style?.setProperty('object-fit', 'contain', 'important'); content.append(node);
+        const rect = source.getBoundingClientRect();
+        if (!rect.width || !rect.height) continue;
+        const fit = Math.min(1, (doc.defaultView.innerWidth * .94) / rect.width, (doc.defaultView.innerHeight * .9) / rect.height);
+        const size = { width: rect.width * fit, height: rect.height * fit };
+        node.style?.setProperty('max-width', 'none', 'important'); node.style?.setProperty('max-height', 'none', 'important');
+        node.style?.setProperty('width', size.width + 'px', 'important'); node.style?.setProperty('height', size.height + 'px', 'important');
+        node.style?.setProperty('object-fit', 'contain', 'important'); content.append(node); scaled.push({ node, size });
       }
       if (!content.childNodes.length) return;
-      overlay.append(content); doc.body.append(overlay);
-      const close = event => { if (event.key === 'Escape' || event.type === 'click' && event.target === overlay) { overlay.remove(); doc.removeEventListener('keydown', close, true); } };
-      overlay.addEventListener('click', close); doc.addEventListener('keydown', close, true);
+      let zoom = 1;
+      const updateZoom = value => {
+        zoom = Math.min(3, Math.max(.5, Math.round(value * 100) / 100));
+        zoomLabel.textContent = Math.round(zoom * 100) + '%'; overlay.dataset.zoom = String(zoom);
+        for (const item of scaled) { item.node.style.setProperty('width', item.size.width * zoom + 'px', 'important'); item.node.style.setProperty('height', item.size.height * zoom + 'px', 'important'); }
+      };
+      const button = (label, text, action) => {
+        const b = doc.createElement('button'); b.type = 'button'; b.setAttribute('aria-label', label); b.textContent = text;
+        b.style.cssText = 'min-width:36px;padding:6px 10px;border:1px solid #fff9;border-radius:4px;background:#222;color:white;cursor:pointer';
+        b.addEventListener('click', event => { event.stopPropagation(); action(); }); toolbar.append(b); return b;
+      };
+      button('缩小图片', '−', () => updateZoom(zoom - .25));
+      button('放大图片', '+', () => updateZoom(zoom + .25));
+      button('适合窗口', '适合', () => updateZoom(1)); toolbar.append(zoomLabel);
+      button('关闭图片预览', '关闭', () => close());
+      updateZoom(zoom); overlay.append(toolbar, content); doc.body.append(overlay);
+      const close = () => { overlay.remove(); doc.removeEventListener('keydown', onKey, true); };
+      const onKey = event => {
+        if (event.key === 'Escape') close();
+        else if (event.key === '+' || event.key === '=') updateZoom(zoom + .25);
+        else if (event.key === '-') updateZoom(zoom - .25);
+      };
+      content.addEventListener('wheel', event => { event.preventDefault(); updateZoom(zoom + (event.deltaY < 0 ? .1 : -.1)); }, { passive: false });
+      content.addEventListener('click', event => event.stopPropagation());
+      overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+      doc.addEventListener('keydown', onKey, true);
     };
     const doubleClick = event => {
       const element = graphic(event.target); if (!element) return;
@@ -578,8 +666,8 @@ var ZRBManualFigures = {
     };
     const dismiss = event => { if (!state.menu?.contains(event.target)) { state.menu?.remove(); state.menu = null; } };
     const key = event => { if (event.key === 'Escape') { state.menu?.remove(); state.menu = null; state.editor?.close(); } };
-    const scroll = () => { control.hidden = true; this.scheduleVisible(state); };
-    state.listeners = [['pointerover', show], ['focusin', show], ['click', directEdit], ['dblclick', doubleClick], ['contextmenu', menu], ['pointerdown', dismiss], ['pointerover', scopeHover], ['pointerout', clearScopeHover], ['keydown', key], ['scroll', scroll]];
+    const scroll = () => { this.cancelControlHide(state); control.hidden = true; this.scheduleVisible(state); };
+    state.listeners = [['pointerover', show], ['focusin', show], ['dblclick', doubleClick], ['contextmenu', menu], ['pointerdown', dismiss], ['pointerover', scopeHover], ['pointerout', clearScopeHover], ['keydown', key], ['scroll', scroll]];
     for (const [name, listener] of state.listeners) doc.addEventListener(name, listener, true);
     state.onPageHide = () => this.dispose(state);
     doc.defaultView?.addEventListener('pagehide', state.onPageHide, { once: true });
@@ -602,6 +690,7 @@ var ZRBManualFigures = {
       state.scopeHighlight?.classList.remove('zrb-manual-scope-highlight'); state.doc.querySelector('.zrb-image-lightbox')?.remove();
       state.editor?.close(); state.menu?.remove(); state.control?.remove(); state.style?.remove();
       if (state.visibilityTimer) clearTimeout(state.visibilityTimer);
+      this.cancelControlHide(state); if (state.actionFeedbackTimer) clearTimeout(state.actionFeedbackTimer); state.actionFeedback?.remove();
       for (const [name, listener] of state.listeners || []) state.doc.removeEventListener(name, listener, true);
       state.doc.defaultView?.removeEventListener('pagehide', state.onPageHide);
       for (const id of state.active.keys()) this.unmount(state, id);

@@ -268,3 +268,11 @@ python tools/check-delivery.py --xpi "zotero-reading-bilingual-1.6.13-figure-lay
 - 自动回归：`npm test` 104/104；`npm run test:browser` 28/28；真实 Gecko 153.0 + 本机 Zotero Reader/PDF.js 对 Figure 18 的裁剪与恢复用例通过。运行环境不是日常 Windows Zotero 桌面会话，桌面验收仍待用户复核。
 - 本轮测试包 `zotero-reading-bilingual-1.6.13-figure-editor-usability-test.xpi`：79 个运行文件，1,117,667 字节，SHA-256 `ef7b47a271cb0c2d94221d52d1aa09aea0975c30b096a3c8657f6d8b7984d850`。包内文件、当前源码与 `F:\111office\zotero\plugins` 副本逐项一致。保留上一测试包 `zotero-reading-bilingual-1.6.13-manual-figure-crop-test.xpi` 作为回退；正式版本仍为 1.6.13。
 - 图像裁剪/跨页识别相关文件已提交：`9181cdc`（Improve figure crop editing and cross-page detection）；未推送。其他排版、翻译相关改动仍保留在工作区，没有纳入本次提交。日常 Zotero 桌面验收仍未完成。
+
+## 本轮修正：图片操作反馈与放大预览（2026-11-02）
+
+- 裁剪按钮此前在 PDF 指纹或 Reader 初始化失败时只写日志和 `title`，界面没有反馈；现在显示处理中状态，失败时给出可读错误。补图按钮改为绑定在按钮本身，避免依赖阅读文档上的捕获式点击代理。
+- 浮动裁剪按钮位置按可见的图片/矢量图边界计算，不跟随更宽的 SDT 容器；离开图片后延迟隐藏，跨过空隙移到按钮时不闪退。双击后的预览新增缩放、适合窗口、关闭控件和滚轮缩放；单击图像不会误关，Esc 可关闭。
+- 自动验证：`npm test` 104/104；`npm run test:browser` 31/31。浏览器套件首次并行运行有 3 项既有超时，单独复跑均通过，随后完整套件通过。真实 Gecko 153 + Zotero Reader/PDF.js：7 项通过、2 项因环境未配置而跳过；Figure 18 实际跨页 PDF 裁剪用例通过。
+- 新包 `zotero-reading-bilingual-1.6.13-figure-zoom-interaction-test.xpi`：79 个运行文件，1,119,133 字节，SHA-256 `8d48ab4bd2e0322f3de868a9a7e6d04ed322a069efbef751c84487e4538fd150`。语法、XPI 文件清单及插件目录副本校验通过；保留上一包 `zotero-reading-bilingual-1.6.13-figure-editor-usability-test.xpi` 回退。正式版本仍为 1.6.13。
+- 日常 Windows Zotero 桌面交互验收仍待完成；自动化结果不能替代桌面验收。
