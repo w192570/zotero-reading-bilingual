@@ -6,7 +6,7 @@ const { gecko } = require('../helpers/gecko.cjs');
 
 test('system-principal figure planning accepts real content-principal SDT arrays', { timeout: 30000 }, async t => {
   const browser = await gecko(t);
-  const source = fs.readFileSync(process.env.ZRB_FIGURE_SOURCE || path.resolve(__dirname, '../../content/scripts/pdf-figure-fallback.js'), 'utf8');
+  const source = require('../helpers/figure-source.cjs')();
   const result = await browser.run(`
     const Cu = Components.utils;
     const browser = Services.appShell.createWindowlessBrowser(false);
@@ -18,6 +18,7 @@ test('system-principal figure planning accepts real content-principal SDT arrays
     ] };
     const foreign = Cu.waiveXrays(Cu.cloneInto(structure, doc.defaultView));
     const plugin = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), { wantXrays: false });
+    Object.assign(plugin, { TextEncoder, TextDecoder, atob, btoa });
     plugin.Cu = Cu;
     plugin.reader = { _internalReader: { _sdt: { structure: foreign },
       _primarySDTView: { _iframeDocument: doc }, _primaryView: { _iframeWindow: doc.defaultView } } };
@@ -49,9 +50,9 @@ test('system-principal figure planning accepts real content-principal SDT arrays
   t.diagnostic('Firefox ' + browser.version + ': real system/content principal boundary');
 });
 
-test('privileged plugin loads and trims content-rendered figures across the full security boundary', { timeout: 30000 }, async t => {
+test('manual-to-auto settings load and trim visible content figures across the full security boundary', { timeout: 30000 }, async t => {
   const browser = await gecko(t);
-  const source = fs.readFileSync(process.env.ZRB_FIGURE_SOURCE || path.resolve(__dirname, '../../content/scripts/pdf-figure-fallback.js'), 'utf8');
+  const source = require('../helpers/figure-source.cjs')();
   const results = await browser.run(`
     const done = arguments[arguments.length - 1];
     const source = arguments[0];
@@ -64,25 +65,39 @@ test('privileged plugin loads and trims content-rendered figures across the full
         doc.documentElement.innerHTML = '<head></head><body><article id="sdt-content"><figcaption data-ref-path="1">Figure 2</figcaption></article></body>';
         const content = Cu.Sandbox(doc.defaultView, { sandboxPrototype: doc.defaultView, wantXrays: false });
         Cu.evalInSandbox(
+          // Windowless test documents have no viewport. Supply content-realm
+          // geometry to exercise automatic loading without observer delivery.
+          'Element.prototype.getBoundingClientRect=function(){return {top:10,bottom:110,width:400,height:100}};' +
+          'Object.defineProperty(window,"innerHeight",{value:600,configurable:true});this.renderCalls=0;' +
           'this.structure = {metadata:{processor:{type:"pdf"}},catalog:{pages:[{viewRect:[0,0,600,800]}]},content:[' +
           '{type:"heading",anchor:{pageRects:[[0,50,700,150,710]]},content:[{text:"Heading"}]},' +
           '{type:"caption",anchor:{pageRects:[[0,50,300,280,310]]},content:[{text:"Figure 2"}]}]};' +
           'this.renderer = {async renderRegionCrops(page,rects) {' +
+          ' renderCalls++;' +
           ' if (Object.getPrototypeOf(rects)!==window.Array.prototype) throw new Error("Crop arguments must belong to content");' +
           ' return rects.map(rect => {const c=document.createElement("canvas");c.width=400;c.height=400;' +
           ' const ctx=c.getContext("2d");ctx.fillStyle="white";ctx.fillRect(0,0,400,400);' +
           ' ctx.fillStyle="blue";ctx.fillRect(40,40,320,320);return c.toDataURL();}); }};', content);
         const plugin = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), { wantXrays: false });
+        Object.assign(plugin, { TextEncoder, TextDecoder, atob, btoa });
         if (exposeCu) plugin.Cu = Cu;
+        let mode = 'manual';
+        plugin.Zotero = { Prefs: { get() { return mode; } } };
         plugin.reader = { _internalReader: { _sdt: { structure: Cu.waiveXrays(content.structure) },
-          _primarySDTView: { _iframeDocument: doc }, _primaryView: { _iframeWindow: doc.defaultView,
+          _primarySDTView: { _iframeDocument: Cu.waiveXrays(doc) }, _primaryView: { _iframeWindow: doc.defaultView,
             _pdfRenderer: Cu.waiveXrays(content.renderer) } } };
         Cu.evalInSandbox(source + '; ZRBPDFFigureFallback.ensure(reader);', plugin);
-        doc.querySelector('button').click();
         const figure = doc.querySelector('figure');
+        await new Promise(resolve => setTimeout(resolve, 20));
+        const beforeAuto = content.renderCalls;
+        mode = 'auto';
+        Cu.evalInSandbox('ZRBPDFFigureFallback.ensure(reader)', plugin);
         for (let i=0; i<200 && figure.dataset.state==='loading'; i++) await new Promise(resolve => setTimeout(resolve,10));
+        mode = 'manual';
+        Cu.evalInSandbox('ZRBPDFFigureFallback.ensure(reader)', plugin);
         results.push({ exposeCu, state: figure.dataset.state, error: figure.querySelector('[role="status"]').textContent,
-          width: figure.querySelector('img').naturalWidth, rect: figure.dataset.cropRect });
+          width: figure.querySelector('img').naturalWidth, rect: figure.dataset.cropRect,
+          beforeAuto, afterAuto: content.renderCalls, sameFigure: doc.querySelector('figure') === figure });
         Cu.evalInSandbox('ZRBPDFFigureFallback.shutdown()', plugin);
         browser.close();
       }
@@ -92,6 +107,9 @@ test('privileged plugin loads and trims content-rendered figures across the full
   assert.ok(Array.isArray(results), JSON.stringify(results));
   for (const result of results) {
     assert.equal(result.state, 'loaded', JSON.stringify(result));
+    assert.equal(result.beforeAuto, 0);
+    assert.equal(result.afterAuto, 1);
+    assert.equal(result.sameFigure, true);
     assert.equal(result.error, '');
     assert.ok(result.width > 100);
     assert.equal(JSON.parse(result.rect).length, 4);
