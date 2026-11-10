@@ -8,9 +8,14 @@ const { JSDOM } = require("jsdom");
 const root = path.resolve(__dirname, "..");
 function setup() {
   const loads = [];
+  const prefs = new Map();
   const scope = {
-    Zotero: { debug() {}, logError() {} },
-    Services: { appShell: { hiddenDOMWindow: { atob } }, scriptloader: { loadSubScript(filename, target) {
+    atob,
+    Zotero: { debug() {}, logError() {}, Prefs: {
+      get(key, global) { return prefs.get(global ? key : "extensions.zotero." + key); },
+      set(key, value, global) { prefs.set(global ? key : "extensions.zotero." + key, value); },
+    } },
+    Services: { scriptloader: { loadSubScript(filename, target) {
       loads.push(filename);
       vm.runInNewContext(fs.readFileSync(filename, "utf8"), target);
     } } },
@@ -30,7 +35,7 @@ function setup() {
     doc.body.appendChild(card);
     return card.querySelector(".zrb-card-content");
   };
-  return { doc, renderer, plugin, render, loads };
+  return { doc, renderer, plugin, render, loads, prefs };
 }
 
 test("plain cached paragraphs keep line breaks without loading rendering libraries", () => {
@@ -55,6 +60,116 @@ test("Markdown renders emphasis, hard breaks, lists, headings and tables", () =>
   assert.equal(content.querySelector("td").textContent, "学习率");
   assert.equal(renderer.getSource(content), source);
   assert.ok(render("参数 | 值\n--- | ---\n学习率 | 0.01").querySelector("table"));
+});
+
+test("cached whole-table pipe translations render aligned cells without another model call or cache write", async () => {
+  const { plugin, renderer, doc } = setup();
+  const text = "Elasticity Poisson Batch size 20 32 Initial learning rate 0.001 0.001";
+  const zh = "参数 | 弹性力学 | 泊松\n批大小 | 20 | 32\n初始学习率 | 0.001 | 0.001";
+  doc.body.innerHTML = '<article id="sdt-content"><table id="source"><tr><td>Original table</td></tr></table><p id="after">Following paragraph</p></article>';
+  const element = doc.getElementById("source"), original = element.textContent;
+  plugin.loadCache = async () => ({ [text]: zh });
+  plugin.saveCache = async () => { throw new Error("Display must not rewrite the cache"); };
+  plugin.callModelText = async () => { throw new Error("Cached table must not call a model"); };
+  await plugin.translateTableBlock({ element, text }, {}, doc);
+  const content = element.nextElementSibling.querySelector(".zrb-card-content");
+  assert.deepEqual(Array.from(content.querySelectorAll("thead th"), cell => cell.textContent), ["参数", "弹性力学", "泊松"]);
+  assert.equal(content.querySelectorAll("tbody tr").length, 2);
+  assert.equal(content.querySelector("tbody th[scope='row']").textContent, "批大小");
+  assert.equal(content.querySelectorAll("tbody td")[2].textContent, "0.001");
+  assert.equal(renderer.getSource(content), zh);
+  assert.equal(element.textContent, original);
+  assert.equal(element.querySelectorAll("td").length, 1);
+  await plugin.translateTableBlock({ element, text }, {}, doc);
+  assert.equal(doc.querySelectorAll(".zotero-bilingual-table-card").length, 1);
+  assert.equal(doc.getElementById("after").textContent, "Following paragraph");
+});
+
+test("image and unknown source crops cannot enter table translation or retain old table cards", async () => {
+  const { plugin, doc } = setup();
+  doc.body.innerHTML = '<figure class="sdt-source-crop" data-ref-path="0"><img><span>Architecture labels</span></figure><div class="zotero-bilingual-card zotero-bilingual-table-card">Wrong cached table</div><figcaption>Figure 1 Architecture</figcaption><figure class="sdt-source-crop" data-ref-path="1"></figure><figure class="sdt-source-crop" data-ref-path="2"></figure><figure class="sdt-source-crop"></figure>';
+  const reader = { _internalReader: { _sdt: { structure: { content: [{ type: 'image' }, { type: 'table' }, { type: 'math' }] } } } };
+  const crops = doc.querySelectorAll('figure');
+  assert.equal(plugin.isTableTranslationSource(reader, crops[0]), false);
+  assert.equal(plugin.isTableTranslationSource(reader, crops[1]), true);
+  assert.equal(plugin.isTableTranslationSource(reader, crops[2]), false);
+  assert.equal(plugin.isTableTranslationSource(reader, crops[3]), false);
+  assert.equal(plugin.isTableTranslationSource({}, crops[1]), false);
+  plugin.loadCache = async () => { throw new Error('Image must not read a table translation'); };
+  plugin.callModelText = async () => { throw new Error('Image must not request a table translation'); };
+  plugin.removeMisclassifiedTableCards(reader, doc);
+  await plugin.translateTableBlock({ element: crops[0], text: 'Architecture labels' }, reader, doc);
+  assert.equal(doc.querySelectorAll('.zotero-bilingual-table-card').length, 0);
+  assert.equal(doc.querySelectorAll('img,figcaption').length, 2);
+});
+
+test("table cells preserve empty values, literal pipes, code, links and inline math", () => {
+  const { doc, renderer } = setup();
+  const content = doc.createElement("div");
+  const source = '| 项目 | 记号 | 值 | 备注 |\n| --- | --- | --- | --- |\n| $r$ | $a|b$ | 0.001 | A\\|B |\n| 代码 | `x|y` | 80% | |\n| 链接 | [来源](https://example.com) | — | <img src="https://example.com/image"> |';
+  renderer.renderInto(content, source, { table: true });
+  assert.equal(content.querySelectorAll("thead th").length, 4);
+  assert.equal(content.querySelectorAll("tbody tr").length, 3);
+  assert.equal(content.querySelectorAll(".katex").length, 2);
+  assert.equal(content.querySelectorAll("tbody tr")[0].lastElementChild.textContent, "A|B");
+  assert.equal(content.querySelector("code").textContent, "x|y");
+  assert.equal(content.querySelectorAll("tbody tr")[1].lastElementChild.textContent, "");
+  assert.equal(content.querySelectorAll("img,script,iframe").length, 0);
+  assert.equal(content.querySelector("a").getAttribute("href"), "https://example.com");
+  assert.equal(renderer.getSource(content), source);
+});
+
+test("inconsistent table columns stay intact as text and ordinary prose pipes are not promoted to tables", () => {
+  const { doc, renderer, render } = setup();
+  for (const source of ["项目 | 值\n学习率 | 0.001 | 额外值", "项目 | 值\n--- | ---\n学习率 | 0.001 | 额外值"]) {
+    const content = doc.createElement("div");
+    renderer.renderInto(content, source, { table: true });
+    assert.equal(content.querySelector("table"), null);
+    assert.equal(content.textContent, source, "no inferred, padded or dropped cells");
+  }
+  assert.equal(render("状态 A | 状态 B\n条件 C | 条件 D").querySelector("table"), null);
+});
+
+test("editing and copying a cached table retain its raw text and saving rebuilds the grid", async () => {
+  const { doc, plugin, renderer } = setup();
+  const text = "Parameter value learning rate 0.001 batch size 32", zh = "参数 | 值\n学习率 | 0.001\n批大小 | 32";
+  const element = doc.createElement("table"); doc.body.append(element);
+  plugin.loadCache = async () => ({ [text]: zh });
+  const writes = [];
+  plugin.saveCache = async (_reader, entries) => writes.push(entries);
+  let copied;
+  Object.defineProperty(doc.defaultView.navigator, "clipboard", { value: { writeText: async value => { copied = value; } } });
+  await plugin.translateTableBlock({ element, text }, {}, doc);
+  const card = element.nextElementSibling;
+  card.querySelector(".zrb-btn-copy").click();
+  assert.equal(copied, zh);
+  card.querySelector(".zrb-btn-edit").click();
+  assert.equal(card.querySelector("textarea").value, zh);
+  const changed = "参数 | 值\n学习率 | 0.0005\n批大小 | 64";
+  card.querySelector("textarea").value = changed;
+  card.querySelector(".zrb-save-edit-btn").click();
+  await new Promise(setImmediate);
+  const content = card.querySelector(".zrb-card-content");
+  assert.equal(content.querySelectorAll("tbody td")[0].textContent, "0.0005");
+  assert.equal(renderer.getSource(content), changed);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][text], changed);
+});
+
+test("explicit retranslation of a cached table keeps the table-specific request and renders its result", async () => {
+  const { doc, plugin } = setup();
+  const text = "Parameter value learning rate 0.001 batch size 32";
+  const element = doc.createElement("table"); doc.body.append(element);
+  plugin.loadCache = async () => ({ [text]: "参数 | 值\n学习率 | 0.001" });
+  plugin.saveCache = async () => {};
+  const prompts = [];
+  plugin.callModelText = async prompt => { prompts.push(prompt); return "| 参数 | 值 |\n| --- | --- |\n| 学习率 | 0.0005 |"; };
+  plugin.callOpenAIBatch = async () => { throw new Error("Table must retain its specialized request"); };
+  await plugin.translateTableBlock({ element, text }, {}, doc);
+  await plugin.retryTranslationCards({}, doc, [element.nextElementSibling], { force: true });
+  assert.equal(prompts.length, 1);
+  assert.ok(prompts[0].includes("表格"));
+  assert.equal(element.nextElementSibling.querySelector("tbody td").textContent, "0.0005");
 });
 
 test("card styles preserve plain line breaks and allow rendered Markdown and editing", () => {
@@ -83,6 +198,16 @@ test("all four math delimiters render locally and preserve TeX through typograph
   render("缓存中的公式 $a_1+b_2$。");
   assert.equal(doc.querySelectorAll("#zrb-katex-style").length, 1);
   assert.equal(loads.length, 2);
+});
+
+test("Chinese prose renders short inline variables and subscripts without exposing dollar delimiters", () => {
+  const { render, renderer } = setup();
+  const source = "其中 $r$ 为预设的滤波半径，$X_g$ 和 $X_e$ 分别表示单元 $g$ 与 $e$ 的中心位置。";
+  const content = render(source);
+  assert.equal(content.querySelectorAll('.katex').length, 5, content.innerHTML);
+  assert.equal(content.querySelectorAll('.katex-error').length, 0);
+  assert.equal(content.textContent.includes('$'), false);
+  assert.equal(renderer.getSource(content), source);
 });
 
 test("display formulas can contain blank lines and Markdown markup inside TeX", () => {
@@ -264,6 +389,25 @@ test("the native toolbar dropdown exposes all three states and applies each chan
   assert.equal(doc.getElementById("zrb-display-mode"), select);
 });
 
+test("all saved display modes restore before the toolbar reads stale cached card visibility", async () => {
+  const { doc, plugin, reader, select, prefs, contentDoc } = setupToolbar();
+  let currentDoc = contentDoc;
+  plugin.getRealContentDoc = () => currentDoc;
+  plugin.translateActiveReader = () => { throw new Error("Existing translations must not call the model"); };
+  for (const mode of ["translation", "bilingual", "original"]) {
+    select.value = mode;
+    select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
+    await new Promise(setImmediate);
+    assert.equal(prefs.get(plugin.PREF_READER_DISPLAY_MODE), mode);
+    currentDoc = new JSDOM('<article id="sdt-content"><p>English source</p><div class="zotero-bilingual-card zotero-bilingual-hidden">已有译文</div></article>').window.document;
+    plugin.injectToolbarButton(reader, doc);
+    assert.equal(currentDoc.documentElement.dataset.zrbDisplayMode, mode);
+    assert.equal(select.value, mode);
+    assert.equal(currentDoc.querySelector('.zotero-bilingual-card').classList.contains('zotero-bilingual-hidden'), mode === 'original');
+    assert.equal(currentDoc.documentElement.classList.contains('zrb-translation-only'), mode === 'translation');
+  }
+});
+
 test("the visible dropdown follows keyboard visibility changes and replaces stale controls", async () => {
   const { doc, plugin, reader, select } = setupToolbar();
   await plugin.toggleVisibility(reader);
@@ -320,39 +464,32 @@ test("a translation that produces no cards restores the actual visible state", a
 });
 
 
-test("Tools menu toggles translation-only and keeps its checkmark and toolbar in sync", async () => {
+test("Tools menu omits redundant display toggles but keeps the full-document translation command", async () => {
   const { doc, plugin, reader, contentDoc, select } = setupToolbar();
   const popup = doc.createElement("menupopup");
   popup.id = "menu_ToolsPopup";
   doc.body.appendChild(popup);
   doc.createXULElement = (tag) => doc.createElement(tag);
+  for (const id of ["reading-bilingual-tools-toggle", "reading-bilingual-tools-translation-only"]) {
+    const stale = doc.createXULElement("menuitem"); stale.id = id; popup.appendChild(stale);
+    plugin.addedElementIDs.push(id);
+  }
   plugin.getActiveReader = () => reader;
   const win = { document: doc };
+  let stalePopupCalls = 0;
+  const stalePopupHandler = () => stalePopupCalls++;
+  popup.addEventListener("popupshowing", stalePopupHandler);
+  plugin._toolsMenuListeners.set(win, { popup, handler: stalePopupHandler });
   plugin.injectMenus(win);
   plugin.injectMenus(win);
-  const item = doc.getElementById("reading-bilingual-tools-translation-only");
-  assert.equal(item.getAttribute("label"), "仅显示译文（保留图表）");
-  assert.equal(item.getAttribute("type"), "checkbox");
-  assert.equal(doc.querySelectorAll("#reading-bilingual-tools-translation-only").length, 1);
-  assert.equal(item.hasAttribute("checked"), false);
-  for (const mode of ["translation", "bilingual"]) {
-    item.dispatchEvent(new doc.defaultView.Event("command"));
-    await new Promise(setImmediate);
-    assert.equal(contentDoc.documentElement.dataset.zrbDisplayMode, mode);
-    assert.equal(select.value, mode);
-    assert.equal(item.hasAttribute("checked"), mode === "translation");
-    assert.ok(contentDoc.getElementById("figure"));
-  }
-  await plugin.setReaderDisplayMode(reader, "translation");
+  assert.equal(doc.querySelectorAll("#reading-bilingual-tools-toggle").length, 0);
+  assert.equal(doc.querySelectorAll("#reading-bilingual-tools-translation-only").length, 0);
+  assert.equal(doc.querySelectorAll("#reading-bilingual-tools-translate").length, 1,
+    "the separate full-document translation action remains available");
   popup.dispatchEvent(new doc.defaultView.Event("popupshowing"));
-  assert.equal(item.getAttribute("checked"), "true");
-  plugin.getActiveReader = () => null;
-  popup.dispatchEvent(new doc.defaultView.Event("popupshowing"));
-  assert.equal(item.getAttribute("disabled"), "true");
-  assert.equal(item.hasAttribute("checked"), false);
+  assert.equal(stalePopupCalls, 0, "obsolete toggle listeners are removed during an in-place plugin update");
   plugin.removeMenus(win);
-  assert.equal(doc.getElementById(item.id), null);
-  assert.equal(plugin._toolsMenuListeners.has(win), false);
+  assert.equal(doc.getElementById("reading-bilingual-tools-translate"), null);
 });
 
 test("translation-only hides inline ligature glyphs and aria-hidden prose without deleting real code or math", () => {

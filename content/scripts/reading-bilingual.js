@@ -1135,6 +1135,59 @@ var ReadingBilingual = {
         white-space: pre-wrap !important;
         font-variant-numeric: tabular-nums !important;
       }
+      .zotero-bilingual-table-card {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      .zrb-table-scroll {
+        max-width: 100% !important;
+        overflow-x: auto !important;
+        overscroll-behavior-x: contain !important;
+        font-size: 0.9em !important;
+        line-height: 1.5 !important;
+      }
+      .zrb-table-scroll:focus-visible {
+        outline: 2px solid ${theme.border} !important;
+        outline-offset: 2px !important;
+      }
+      .zrb-rich-text .zrb-translation-table {
+        min-width: calc(var(--zrb-table-columns) * 6em + 4em) !important;
+        border-collapse: separate !important;
+        border-spacing: 0 !important;
+        margin: 0 !important;
+        font: inherit !important;
+        color: inherit !important;
+        font-variant-numeric: tabular-nums !important;
+      }
+      .zrb-translation-table :is(th, td) {
+        padding: 0.5em 0.65em !important;
+        min-width: 4.5em !important;
+        max-width: 14em !important;
+        vertical-align: middle !important;
+        text-align: center !important;
+        text-indent: 0 !important;
+        font: inherit !important;
+        white-space: normal !important;
+        word-break: normal !important;
+        overflow-wrap: break-word !important;
+      }
+      .zrb-translation-table thead th {
+        font-weight: 600 !important;
+        background: ${theme.bgTint} !important;
+      }
+      .zrb-translation-table tr > :first-child {
+        position: sticky !important;
+        left: 0 !important;
+        z-index: 1 !important;
+        min-width: 8em !important;
+        text-align: left !important;
+        font-weight: 600 !important;
+        background: var(--background-color, Canvas) !important;
+      }
+      .zrb-translation-table tbody tr:nth-child(even) td {
+        background: rgba(127,127,127,0.04) !important;
+      }
       .zotero-bilingual-toc-card {
         margin: 12px 0 20px 0 !important;
         padding: 14px 18px !important;
@@ -1684,6 +1737,12 @@ var ReadingBilingual = {
     if (!doc) return;
 
     const toolsPopup = doc.getElementById("menu_ToolsPopup");
+    const obsoleteToolIDs = new Set(["reading-bilingual-tools-toggle", "reading-bilingual-tools-translation-only"]);
+    const oldToolsListener = this._toolsMenuListeners.get(win);
+    if (oldToolsListener) oldToolsListener.popup.removeEventListener("popupshowing", oldToolsListener.handler);
+    this._toolsMenuListeners.delete(win);
+    for (const id of obsoleteToolIDs) doc.getElementById(id)?.remove();
+    this.addedElementIDs = this.addedElementIDs.filter(id => !obsoleteToolIDs.has(id));
     if (toolsPopup && !doc.getElementById("reading-bilingual-tools-translate")) {
       const transItem = doc.createXULElement("menuitem");
       transItem.id = "reading-bilingual-tools-translate";
@@ -1693,48 +1752,6 @@ var ReadingBilingual = {
       });
       toolsPopup.appendChild(transItem);
       this.addedElementIDs.push(transItem.id);
-
-      const toggleItem = doc.createXULElement("menuitem");
-      toggleItem.id = "reading-bilingual-tools-toggle";
-      toggleItem.setAttribute("label", "显示/隐藏双语译文 (Cmd/Ctrl+Shift+H)");
-      toggleItem.addEventListener("command", () => {
-        this.toggleVisibility(null, win);
-      });
-      toolsPopup.appendChild(toggleItem);
-      this.addedElementIDs.push(toggleItem.id);
-    }
-
-    if (toolsPopup && !doc.getElementById("reading-bilingual-tools-translation-only")) {
-      const item = doc.createXULElement("menuitem");
-      item.id = "reading-bilingual-tools-translation-only";
-      item.setAttribute("label", "仅显示译文（保留图表）");
-      item.setAttribute("type", "checkbox");
-      item.setAttribute("autocheck", "false");
-      const updateChecked = () => {
-        const reader = this.getActiveReader(win);
-        const contentDoc = reader && this.getRealContentDoc(reader);
-        if (this.getReaderDisplayMode(contentDoc) === "translation") item.setAttribute("checked", "true");
-        else item.removeAttribute("checked");
-        if (contentDoc) item.removeAttribute("disabled");
-        else item.setAttribute("disabled", "true");
-      };
-      item.addEventListener("command", async () => {
-        try {
-          await this.toggleTranslationOnlyMode(null, win);
-        } catch (error) {
-          Zotero.logError(error);
-        } finally {
-          updateChecked();
-        }
-      });
-      const popupHandler = (event) => {
-        if (event.target === toolsPopup) updateChecked();
-      };
-      toolsPopup.addEventListener("popupshowing", popupHandler);
-      this._toolsMenuListeners.set(win, { popup: toolsPopup, handler: popupHandler });
-      toolsPopup.appendChild(item);
-      this.addedElementIDs.push(item.id);
-      updateChecked();
     }
 
     const itemMenu = doc.getElementById("zotero-itemmenu");
@@ -1756,6 +1773,7 @@ var ReadingBilingual = {
     const listener = this._toolsMenuListeners.get(win);
     if (listener) listener.popup.removeEventListener("popupshowing", listener.handler);
     this._toolsMenuListeners.delete(win);
+    for (const id of ["reading-bilingual-tools-toggle", "reading-bilingual-tools-translation-only"]) doc.getElementById(id)?.remove();
     for (let id of this.addedElementIDs) {
       const el = doc.getElementById(id);
       if (el) el.remove();
@@ -2885,8 +2903,8 @@ var ReadingBilingual = {
   },
 
   setTranslationContent(content, text, plain = false) {
-    ZRBTranslationRenderer.renderInto(content, text, { plain });
     const card = content?.closest?.(".zotero-bilingual-card");
+    ZRBTranslationRenderer.renderInto(content, text, { plain, table: card?.classList.contains("zotero-bilingual-table-card") });
     if (card) this.updateChineseFirstLineIndent(card);
   },
 
@@ -3450,6 +3468,7 @@ var ReadingBilingual = {
     }
     style.textContent = this.getGeneratedCSS();
     this.repairExistingHeadingNumbers(doc);
+    this.removeMisclassifiedTableCards(reader, doc);
 
     // Fold semantic SDT notes even when the user has not configured a model.
     // This is a DOM-only presentation change and does not need translation.
@@ -3802,14 +3821,13 @@ var ReadingBilingual = {
       }
     }
 
-    // First pass C: whole tables and image-cropped blocks. Reading mode draws a
-    // PDF table as a picture and keeps its text in a hidden node, so nothing
-    // inside one can be picked up cell by cell -- it has to be translated as a
-    // single unit anchored on the table itself.
+    // Source crops can be images, math or tables. Only explicitly typed SDT
+    // tables (or semantic HTML tables) may enter the whole-table request.
     const tableBlocks = [];
     const translateTables = this.getTranslateTables();
     const tableUnitSelector = "#sdt-content table, #sdt-content figure.sdt-source-crop, table, figure.sdt-source-crop";
     for (const el of (translateTables ? Array.from(doc.querySelectorAll(tableUnitSelector)) : [])) {
+      if (!this.isTableTranslationSource(reader, el)) continue;
       if (el.closest(".zotero-bilingual-card, .zotero-bilingual-ref-notice")) continue;
       if (el.classList.contains("sdt-math") || el.querySelector(".sdt-math")) continue;
       if (tableBlocks.some((b) => b.element.contains(el))) continue;
@@ -4432,8 +4450,32 @@ var ReadingBilingual = {
     }
   },
 
+  isTableTranslationSource(reader, element) {
+    if (element?.matches?.('table')) return true;
+    if (!element?.matches?.('figure.sdt-source-crop') || element.classList.contains('sdt-math')) return false;
+    const ref = element.getAttribute('data-ref-path');
+    if (!ref || !/^\d+(?:\.\d+)*$/.test(ref)) return false;
+    try {
+      const internal = reader?._internalReader || reader;
+      let node = internal?._sdt?.structure;
+      // Index directly: Reader arrays can belong to another Gecko compartment.
+      for (const index of ref.split('.')) node = node?.content?.[Number(index)];
+      return node?.type === 'table';
+    } catch (e) { return false; }
+  },
+
+  removeMisclassifiedTableCards(reader, doc) {
+    for (const source of doc.querySelectorAll('figure.sdt-source-crop')) {
+      if (this.isTableTranslationSource(reader, source)) continue;
+      // Only remove this plugin's adjacent table cards, never captions or
+      // source nodes. Keep durable cache entries so the change is reversible.
+      while (source.nextElementSibling?.classList.contains('zotero-bilingual-table-card')) source.nextElementSibling.remove();
+    }
+  },
+
   async translateTableBlock(block, reader, doc, forceReTranslate = false) {
     if (!block || !block.element || !block.text) return;
+    if (!this.isTableTranslationSource(reader, block.element)) return;
     const el = block.element;
     const text = block.text;
 
@@ -4449,24 +4491,23 @@ var ReadingBilingual = {
 
     const card = this.createCardElement(reader, doc, text, zh || "正在整体翻译表格…", !zh);
     card.classList.add("zotero-bilingual-table-card");
+    if (zh) this.setTranslationContent(card.querySelector(".zrb-card-content"), zh);
     const titleRow = doc.createElement("div");
     titleRow.className = "zotero-bilingual-toc-title";
     const badge = doc.createElement("span");
     badge.className = "zotero-bilingual-toc-badge";
-    badge.textContent = "📊 表格整体译文 / Table";
+    badge.textContent = "表格译文";
     titleRow.appendChild(badge);
     card.insertBefore(titleRow, card.firstChild);
     el.insertAdjacentElement("afterend", card);
     this.markSourceForTranslationOnly(el);
 
-    if (zh) return;
-
     const prompt = `你是一名顶尖学术学者兼专业科技翻译。
 以下是一篇学术文献中一张表格的全部文字内容，由于原文是版面排版，文字已被拉平为一行，列与列之间只以空格分隔。
 
 【翻译要求】：
-1. 先按语义还原表格结构：识别表头与各行，按“表头行 / 每行一行”的形式逐行输出。
-2. 每一行内，各单元格之间用竖线符号（|）分隔，保持原有的列顺序。
+1. 先按语义还原表格结构：识别表头与各行，输出标准 Markdown 表格；第一行为表头，第二行为 | --- | --- | 形式的分隔行，后续每行对应一条数据。
+2. 每一行内，各单元格之间用竖线符号（|）分隔，所有行的列数必须一致，空单元格保留为空。保持原有行列顺序，不补造数据；单元格文字中的竖线用反斜杠转义。
 3. 数字、符号（✓、✗、—、%、±）、公式、变量名、引用编号一律原样保留。
 4. 术语专业地道；严禁在中文后用括号附带英文原文。
 5. 只输出还原后的中文表格文本，不要输出任何前言、说明或 Markdown 代码块标记。
@@ -4475,6 +4516,7 @@ var ReadingBilingual = {
 ${text}
 `;
     this._cardRetryRequests.set(card, () => this.callModelText(prompt));
+    if (zh) return;
 
     try {
       const raw = await this.callModelText(prompt);
