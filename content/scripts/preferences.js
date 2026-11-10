@@ -97,6 +97,10 @@
     const fallbackInput = document.getElementById("reading-bilingual-pref-fallback");
     const pageWidthSelect = document.getElementById("reading-bilingual-pref-pagewidth");
     const readerScaleSelect = document.getElementById("reading-bilingual-pref-readerscale");
+    const figureModeSelect = document.getElementById("reading-bilingual-pref-figure-mode");
+    const figureCacheCheck = document.getElementById("reading-bilingual-pref-figure-cache");
+    const figureCacheStatus = document.getElementById("reading-bilingual-figure-cache-status");
+    const clearFigureCache = document.getElementById("reading-bilingual-figure-cache-clear");
     const promptArea = document.getElementById("reading-bilingual-pref-prompt");
     const resetBtn = document.getElementById("reading-bilingual-pref-reset-prompt");
     const saveBtn = document.getElementById("reading-bilingual-pref-save");
@@ -233,6 +237,28 @@
     if (fallbackInput && plugin.getFallbackModels) fallbackInput.value = plugin.getFallbackModels().join(",");
     if (pageWidthSelect && plugin.getReaderPageWidth) pageWidthSelect.value = plugin.getReaderPageWidth();
     if (readerScaleSelect && plugin.getReaderScale) readerScaleSelect.value = String(plugin.getReaderScale());
+    if (figureModeSelect && plugin.getPDFFigureMode) figureModeSelect.value = plugin.getPDFFigureMode();
+    if (figureCacheCheck && plugin.getPDFFigureCache) figureCacheCheck.checked = plugin.getPDFFigureCache();
+    async function updateFigureCacheStatus(cleared = false) {
+      if (!figureCacheStatus || !plugin.getPDFFigureCacheStats) return;
+      try {
+        const stats = await plugin.getPDFFigureCacheStats();
+        figureCacheStatus.textContent = !stats?.available ? "当前环境未启用磁盘缓存" :
+          (cleared ? "已清理。" : "") + "本地缓存：" + (stats.diskBytes / 1048576).toFixed(1) + " MiB / " + Math.round(stats.diskLimit / 1048576) + " MiB";
+        if (stats?.error) figureCacheStatus.textContent += "；部分缓存读写失败，必要时会重新提取";
+      } catch (e) { figureCacheStatus.textContent = "缓存用量读取失败，补图仍可正常读取"; }
+    }
+    updateFigureCacheStatus();
+    if (figureCacheCheck) figureCacheCheck.addEventListener("change", () => {
+      plugin.setPDFFigureCache?.(figureCacheCheck.checked);
+      showSavedFeedback();
+    });
+    if (clearFigureCache) clearFigureCache.addEventListener("click", async () => {
+      clearFigureCache.disabled = true;
+      try { await plugin.clearPDFFigureCache(); await updateFigureCacheStatus(true); }
+      catch (e) { if (figureCacheStatus) figureCacheStatus.textContent = "缓存清理失败，请重试"; }
+      finally { clearFigureCache.disabled = false; }
+    });
     promptArea.value = plugin.getCustomPrompt();
     updateKeyStatus();
 
@@ -379,6 +405,7 @@
       if (fallbackInput && plugin.setFallbackModels) plugin.setFallbackModels(fallbackInput.value);
       if (pageWidthSelect && plugin.setReaderPageWidth) plugin.setReaderPageWidth(pageWidthSelect.value);
       if (readerScaleSelect && plugin.setReaderScale) plugin.setReaderScale(readerScaleSelect.value);
+      if (figureModeSelect && plugin.setPDFFigureMode) plugin.setPDFFigureMode(figureModeSelect.value);
       const prompt = promptArea.value.trim();
 
       if (plugin.setProvider) plugin.setProvider(provider);
@@ -508,7 +535,7 @@
       concurrencySelect.addEventListener("command", saveAll);
     }
 
-    [pageWidthSelect, readerScaleSelect].forEach((el) => {
+    [pageWidthSelect, readerScaleSelect, figureModeSelect].forEach((el) => {
       if (!el) return;
       el.addEventListener("change", saveAll);
       el.addEventListener("command", saveAll);

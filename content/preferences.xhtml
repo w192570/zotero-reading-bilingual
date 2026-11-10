@@ -83,7 +83,7 @@
 			<checkbox id="reading-bilingual-pref-autotrans" label="进入阅读模式时自动翻译（本地已有缓存则秒级载入，不消耗 API 额度）"/>
 		</hbox>
 		<hbox align="center">
-			<checkbox id="reading-bilingual-pref-tables" label="翻译表格与图块（整张表作为一个整体翻译；关闭可节约 API 额度）"/>
+			<checkbox id="reading-bilingual-pref-tables" label="翻译表格（整张表作为一个整体翻译；关闭可节约 API 额度）"/>
 		</hbox>
 		<hbox align="center" style="gap: 12px; margin-top: 8px;">
 			<label value="并发请求数:" style="width: 95px;"/>
@@ -100,6 +100,36 @@
 		</hbox>
 		<html:div style="margin-left: 107px; font-size: 11px; color: var(--fill-secondary, #777);">
 			同时发出的翻译请求数量。调高可显著加快长文献，但超出服务商速率上限会让部分段落返回失败，届时再点一次按钮即可续翻。
+		</html:div>
+	</groupbox>
+
+	<!-- Local PDF figure recovery -->
+	<groupbox id="reading-bilingual-figure-settings" style="padding: 14px 16px; border-radius: 8px; border: 1px solid var(--material-panedivider, #e0e0e0);">
+		<label><html:h3 style="font-size: 13px; font-weight: 600; margin: 0 0 10px 0;">PDF 图形补充</html:h3></label>
+		<hbox align="center" style="gap: 12px;">
+			<html:label for="reading-bilingual-pref-figure-mode" style="width: 95px;">缺图补充：</html:label>
+			<html:select id="reading-bilingual-pref-figure-mode" aria-describedby="reading-bilingual-figure-help"
+			             style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--material-panedivider, #ccc); font-size: 12.5px; background: var(--material-sidepane, #fff); color: inherit;">
+				<html:option value="off">关闭</html:option>
+				<html:option value="manual" selected="selected">点击补图（默认）</html:option>
+				<html:option value="auto">自动补图（滚动到附近时加载）</html:option>
+			</html:select>
+		</hbox>
+		<html:div id="reading-bilingual-figure-help" style="margin: 8px 0 0 107px; font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.5;">
+			补充 PDF 阅读模式中缺失的图形，仅在本地处理，不消耗翻译额度。切换后立即生效；自动补图会增加本地渲染与内存占用。
+		</html:div>
+		<hbox align="center" style="gap: 12px; margin-top: 12px;">
+			<html:label style="display: flex; align-items: center; gap: 6px;">
+				<html:input id="reading-bilingual-pref-figure-cache" type="checkbox"/>
+				缓存补图到本地
+			</html:label>
+		</hbox>
+		<hbox align="center" style="gap: 12px; margin-top: 8px;">
+			<html:span id="reading-bilingual-figure-cache-status" role="status" style="font-size: 11px; color: var(--fill-secondary, #777);">正在读取缓存用量…</html:span>
+			<html:button id="reading-bilingual-figure-cache-clear" type="button" style="padding: 4px 10px;">清理补图缓存</html:button>
+		</hbox>
+		<html:div style="font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.5; margin-top: 6px;">
+			已生成的图形可在下次阅读时复用，缓存超限后自动清理。清理不会修改原 PDF、译文或当前显示的图形。
 		</html:div>
 	</groupbox>
 

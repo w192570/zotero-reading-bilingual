@@ -28,11 +28,24 @@ async function startup(data, reason) {
   };
   ctx._globalThis = ctx;
 
+  // Zotero supplies these globals to each plugin's system-principal sandbox.
+  Object.assign(ctx, { IOUtils, PathUtils, TextEncoder, TextDecoder, atob, btoa, Components, setTimeout, clearTimeout });
+  Services.scriptloader.loadSubScript(`${rootURI}content/scripts/figure-cache.js`, ctx);
+
   Services.scriptloader.loadSubScript(
     `${rootURI}content/scripts/translation-renderer.js`,
     ctx
   );
   ctx.ZRBTranslationRenderer.init(rootURI);
+
+  Services.scriptloader.loadSubScript(
+    `${rootURI}content/scripts/pdf-figure-fallback.js`,
+    ctx
+  );
+
+  for (const name of ['manual-figure-store.js', 'manual-figures.js', 'manual-figure-editor.js']) {
+    Services.scriptloader.loadSubScript(`${rootURI}content/scripts/${name}`, ctx);
+  }
 
   Services.scriptloader.loadSubScript(
     `${rootURI}content/scripts/reading-bilingual.js`,
@@ -91,6 +104,11 @@ function shutdown(data, reason) {
     try {
       Cu.unload(`${rootURI}content/scripts/reading-bilingual.js`);
       Cu.unload(`${rootURI}content/scripts/translation-renderer.js`);
+      Cu.unload(`${rootURI}content/scripts/pdf-figure-fallback.js`);
+      Cu.unload(`${rootURI}content/scripts/figure-cache.js`);
+      for (const name of ['manual-figure-store.js', 'manual-figures.js', 'manual-figure-editor.js']) {
+        Cu.unload(`${rootURI}content/scripts/${name}`);
+      }
     } catch (e) {}
   }
 
