@@ -1,6 +1,46 @@
 # 当前交付状态
 
-核对日期：2026-11-01。
+核对日期：2026-11-10。
+
+## 当前候选：图片放大与裁剪滚动交互修正（2026-11-10）
+
+- 图片放大预览按独立视口重新居中，忽略原阅读页缩放带来的克隆变换；放大后可用鼠标拖动横向、纵向平移，缩放时保持视口中心位置。
+- 裁剪窗口隔离滚轮事件；各内部滚动区到达边界后阻止滚动传到论文阅读页。Ctrl+滚轮仍仅调整原 PDF 预览缩放。
+- 自动验证：单元 110/110，Firefox 图片/裁剪交互 12/12，Gecko 权限边界 2/2。实际 PDF Gecko 用例因未设置私有 PDF 清单而跳过；Windows Zotero 桌面验收待用户完成。
+- 测试包 `zotero-reading-bilingual-1.6.13-image-pan-scroll-test.xpi` 已放入仓库根目录及 `F:\111office\zotero\plugins`；79 个运行文件，1,121,821 字节，SHA-256 `96b3f4d5d49430a376f1b3e062037771ecf31a115f6539bae6fcc77d094d5278`。44 项 JS 语法、XPI 文件清单、包内源码及交付副本哈希检查通过。
+- 旧测试包及重复副本共 7 个已移入 Windows 回收站；保留紧邻回退包 `zotero-reading-bilingual-1.6.13-table-setting-label-test.xpi` 和原有 `zotero-reading-bilingual.xpi`。没有清理其他插件、论文 PDF、SDT 或译文缓存。
+- 正式版本仍为 1.6.13。用户已授权将当前开发分支提交并推送；Windows Zotero 桌面验收仍待用户完成，自动测试不代表桌面验收通过。
+
+## 当前候选：设置文案与图像翻译方案留档（2026-11-10）
+
+- 用户要求暂不实现图像翻译。三种方案、官方类型标错等边界及建议实施顺序已保存至 [图内文字翻译方案](docs/figure-translation-plan.md)，作为候选规划留档。
+- 本次运行文件仅将设置名称“翻译表格与图块”改为“翻译表格”，保留原说明、控件 ID、偏好绑定及现有行为。与上一交付包逐文件比对，仅 `content/preferences.xhtml` 文案发生变化。
+- XML 解析、文案与改动范围检查、44 个 JS 语法及包内源码/副本一致性检查通过；本轮未重跑行为回归或桌面验收。
+- 测试包 `zotero-reading-bilingual-1.6.13-table-setting-label-test.xpi` 已放入仓库根目录及 `F:\111office\zotero\plugins`；79 个运行文件，1,121,080 字节，SHA-256 `85200bf20f538d66b93972b2c5e66c2928dad5cdd0eac32958e8f0416929b9f3`。保留上一包回退，正式版本仍为 1.6.13；未提交或推送。
+
+## 当前候选：阻止图片误走表格翻译（2026-11-10）
+
+- 用户截图暴露上一轮漏查的分类问题：所有原生区域裁剪被当作表格，GINOT 第 1 页 `[3]` 实为 SDT `image`。现仅 HTML `table` 或来源 SDT `table` 可进入整表翻译；图片、公式和无法核实类型的裁剪跳过。
+- 非表格裁剪旁的插件旧表格卡片在翻译入口清除；磁盘缓存保留，重进后不再按整表读取或自动重译图片。原图、图注和邻近内容保留。此轮不修正 SDT 自身类型标错。
+- 验证：单元 110/110；Gecko 表格跨权限 1/1；同一实际 PDF 的架构图与 17×8 表格联合用例 1/1。原 PDF、SDT 和译文文件哈希不变；三种模式、四种窗口宽度、横向滚动、编辑取消通过。未重复运行完整浏览器套件，桌面验收待复核。
+- 当前包 `zotero-reading-bilingual-1.6.13-table-source-fix-test.xpi` 已放入仓库根目录及 `F:\111office\zotero\plugins`；1,121,085 字节，79 个运行文件，SHA-256 `43ab6d4a9eb717271eeec5261e7703cdd5271318a218a59e6c9998562976b045`。44 个 JS 语法和交付一致性检查通过；保留旧包回退。正式版本仍为 1.6.13，未提交或推送，既有工作树改动保留。
+
+## 当前候选：表格译文按行列显示（2026-11-10）
+
+- 整表卡片兼容旧缓存的竖线分隔行，显示为对齐的中文表格；表头换行，首列固定，宽表在卡片内部横向滚动。原始译文保留用于编辑、复制与缓存；列数不一致时保留文本，不补造或丢弃单元格。普通正文的竖线不触发表格转换。
+- 用户主动重译已有缓存表格时，保留整表请求。新请求要求标准 Markdown 表格；重排旧缓存不调用模型、不写回译文，也不修改 PDF 或 SDT。
+- 自动验证：单元 109/109；Firefox 串行全套 35/35；表格/公式的 Gecko 系统权限跨内容文档测试 2/2。首次并行浏览器套件有两项既有超时，改为串行全套后通过，未修改相关用例或放宽断言。
+- 截图对应的 GINOT arXiv v5 实际 PDF 第 8 页验证 1/1：使用当前 Zotero 10.0.7 所带 Reader/SDT renderer/PDF.js，17 行、8 列（含表头）136 格与缓存逐格一致；四种窗口宽度、固定首列、三种显示模式、编辑取消及相邻内容保留通过。原 PDF、SDT 和译文 JSON 的前后哈希一致。
+- 测试包 `zotero-reading-bilingual-1.6.13-table-layout-test.xpi` 已放入仓库根目录和 `F:\111office\zotero\plugins`，79 个运行文件，1,120,708 字节；SHA-256 `5a350e8a2392d3e96a786acca70c1f7772b719c508363d2aec7d92da8bb4db6a`。44 个 JS 文件语法及包内源码/交付副本一致性检查通过，保留上一包 `zotero-reading-bilingual-1.6.13-crop-hover-exit-test.xpi` 回退。
+- 分支及 HEAD 保持 `fix/toolbar-display-dropdown` / `533ea80`，保留既有暂存与未暂存修改；未提交、推送或升级正式版本。Windows Zotero 日常桌面安装后的验收待用户复核。
+- 证据与边界见 [表格译文验证](docs/table-translation-validation.md)，本地截图与交付检查位于 `../.diagnostics/zotero-table-translation-20261110/`。
+
+## 本轮调整：图片裁剪按钮快速隐藏（2026-11-02）
+
+- 鼠标离开图片可见边界后，裁剪按钮立即隐藏；移入按钮时仍可点击。原延迟隐藏覆盖整个 SDT 容器，现按实际图像边界判断，避免按钮在空白区域停留。
+- 自动验证：新增离开图片边界的 Firefox 回归用例；`npm run test:browser` 35/35 通过。`tools/check-delivery.py` 检查 42 个 JS 文件语法及交付文件一致性通过。
+- 测试包：`zotero-reading-bilingual-1.6.13-crop-hover-exit-test.xpi`，仓库根目录与 `F:\111office\zotero\plugins` 各一份，79 个运行文件，1,119,432 字节，SHA-256 `36436b8b0b92cc03a0712daaf6b768b46859fd56a302855776337679d1487425`。保留此前测试包不变；正式版本仍为 1.6.13。
+- Windows Zotero 桌面验收待复核；未提交或推送。
 
 ## 最新调整：中文正文缩进及作者信息/脚注折叠
 
@@ -285,3 +325,10 @@ python tools/check-delivery.py --xpi "zotero-reading-bilingual-1.6.13-figure-lay
 - 自动验证：单元测试 104/104；Firefox 浏览器套件串行运行 34/34；Firefox 153 + 本机 Zotero Reader/PDF.js 的 Gecko 套件 7 项通过、2 项因未配置独立 Zotero 安装目录而跳过。Figure 18 跨页 PDF 原生渲染/坐标用例通过。并行运行时出现资源竞争型超时，串行完整回归通过。
 - 静态交付检查：42 个 JS 文件语法通过；XPI 79 个运行文件与当前源码及交付副本逐项一致。测试包 `zotero-reading-bilingual-1.6.13-image-recrop-retranslate-test.xpi` 位于仓库根目录和 `F:\111office\zotero\plugins`，大小 1,119,639 字节，SHA-256 `ce55dd998df096d472b5b83487110fb03317dd5a68a27636eb6548f16810184e`。保留上一包 `zotero-reading-bilingual-1.6.13-figure-zoom-interaction-test.xpi` 作为回退；版本仍为 1.6.13。
 - 用户提供的第 4、5 张截图没有对应 PDF/SDT 文件，本轮通过带链接的嵌套高窄图片和不同 SDT 媒体类型覆盖候选路径，尚不能确认与截图中的具体来源结构完全相同。日常 Zotero 桌面安装及这两张图对应 PDF 的验收仍待完成。
+
+## 本轮调整：移除重复的工具菜单显示入口（2026-11-02）
+
+- 从「工具」菜单移除“显示/隐藏双语译文”和“仅显示译文（保留图表）”两个入口；保留工具栏的三态显示下拉框、原有快捷键及“重新翻译当前文献”命令。插件更新时也会清理旧版本遗留的两个菜单项和对应弹出监听器。README 已同步移除过时的菜单说明。
+- 回归用例先确认旧代码仍会插入按钮，再验证重复注入、旧按钮清理、旧监听器移除及全文翻译命令保留。`npm test`：104/104 通过；42 个 JS 语法检查通过。
+- 测试包 `zotero-reading-bilingual-1.6.13-clean-tools-menu-test.xpi` 位于仓库根目录和 `F:\111office\zotero\plugins`，79 个运行文件，1,119,394 字节，SHA-256 `af69a3275c44f694dc38dea0fa146dd349538cc7bcf9f78510f8f0445d0e3487`。保留前一包 `zotero-reading-bilingual-1.6.13-image-recrop-retranslate-test.xpi` 作为回退；版本仍为 1.6.13。
+- 本轮仅做菜单与文档调整；Windows Zotero 桌面菜单复核待用户安装测试包后确认。
