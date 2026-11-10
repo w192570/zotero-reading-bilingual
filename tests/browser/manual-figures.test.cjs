@@ -131,6 +131,17 @@ test('hover crop control remains reachable from a graphic whose visual content i
   await page.waitForFunction(() => !!ZRBManualFigures.states.get(document).editor?.page);
 });
 
+test('hover crop control disappears as soon as the pointer leaves the image and control', async t => {
+  const { page } = await fixture(t);
+  const image = page.locator('#native img');
+  const button = page.locator('.zrb-figure-edit-control');
+  await image.hover();
+  assert.equal(await button.isVisible(), true);
+  const box = await image.boundingBox();
+  await page.mouse.move(box.x - 12, box.y + box.height / 2);
+  assert.equal(await button.isVisible(), false, 'the crop control should not linger after leaving the graphic');
+});
+
 test('enlarged images have explicit zoom and close controls while clicking the image keeps it open', async t => {
   const { page } = await fixture(t);
   await page.dblclick('#native img');
@@ -177,6 +188,64 @@ test('lightbox centers narrow images and formula/chart renderings can be recropp
   await page.locator('#odd-image img').evaluate(el => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })));
   await page.getByRole('button', { name: '裁剪／修正图片', exact: true }).click();
   await page.waitForFunction(() => !!ZRBManualFigures.states.get(document).editor?.page);
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+});
+
+test('lightbox recenters after document zoom and dragging pans an enlarged image on both axes', async t => {
+  const { page } = await fixture(t);
+  await page.locator('#native img').evaluate(img => {
+    img.style.setProperty('width', '600px', 'important');
+    img.style.setProperty('height', '450px', 'important');
+    img.style.transform = 'scale(2)';
+  });
+  await page.dblclick('#native img');
+  const lightbox = page.locator('.zrb-image-lightbox');
+  const viewport = page.locator('.zrb-image-lightbox-content');
+  const image = lightbox.locator('img');
+  const center = async () => {
+    const imageBox = await image.boundingBox(), viewportBox = await viewport.boundingBox();
+    return {
+      x: Math.abs(imageBox.x + imageBox.width / 2 - (viewportBox.x + viewportBox.width / 2)),
+      y: Math.abs(imageBox.y + imageBox.height / 2 - (viewportBox.y + viewportBox.height / 2)),
+    };
+  };
+  const initialCenter = await center();
+  assert.ok(initialCenter.x < 3 && initialCenter.y < 3, 'initial fit is centered independently of the source page zoom');
+
+  await page.getByRole('button', { name: '放大图片' }).click();
+  const box = await image.boundingBox();
+  const before = await viewport.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2 - 100, { steps: 4 });
+  await page.mouse.up();
+  const after = await viewport.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
+  assert.ok(after.x > before.x && after.y > before.y, 'dragging the zoomed image pans horizontally and vertically');
+  await page.keyboard.press('Escape');
+});
+
+test('crop editor contains scroll chaining at the edge of its PDF pane', async t => {
+  const { page } = await fixture(t);
+  await page.locator('body').evaluate(body => {
+    const tail = document.createElement('div'); tail.style.height = '3000px'; body.append(tail);
+  });
+  await page.evaluate(() => scrollTo(0, 0));
+  await open(page, '#orphan');
+  const source = page.locator('.zrb-manual-source');
+  await page.locator('[data-field=zoom]').selectOption('2');
+  await source.evaluate(el => { el.scrollTop = el.scrollHeight; el.scrollLeft = el.scrollWidth; });
+  const box = await source.boundingBox();
+  const before = await page.evaluate(() => scrollY);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height - 18);
+  await page.mouse.wheel(0, 700);
+  await page.waitForTimeout(60);
+  const result = await page.evaluate(() => {
+    const pane = document.querySelector('.zrb-manual-source');
+    return { scrollY, paneTop: pane.scrollTop, paneHeight: pane.clientHeight, paneScrollHeight: pane.scrollHeight,
+      overscroll: getComputedStyle(pane).overscrollBehaviorY };
+  });
+  assert.equal(result.scrollY, before, 'wheel input at the PDF pane boundary must not scroll the underlying paper: ' + JSON.stringify(result));
+  assert.equal(await source.evaluate(el => getComputedStyle(el).overscrollBehaviorY), 'contain');
   await page.getByRole('button', { name: '取消', exact: true }).click();
 });
 

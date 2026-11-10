@@ -17,7 +17,7 @@ var ZRBManualFigureEditor = {
     const root = doc.createElement('div'); root.className = 'zrb-manual-editor';
     root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-label', '裁剪／修正图片');
     root.innerHTML = `<style>
-      .zrb-manual-editor{position:fixed;inset:10px;z-index:2147483100;display:flex;flex-direction:column;background:Canvas;color:CanvasText;border:1px solid #8888;border-radius:10px;box-shadow:0 10px 50px #0005;font:14px/1.5 system-ui,sans-serif;text-align:left}
+      .zrb-manual-editor{position:fixed;inset:10px;z-index:2147483100;display:flex;flex-direction:column;overscroll-behavior:contain;background:Canvas;color:CanvasText;border:1px solid #8888;border-radius:10px;box-shadow:0 10px 50px #0005;font:14px/1.5 system-ui,sans-serif;text-align:left}
       .zrb-manual-editor *{box-sizing:border-box;text-indent:0!important;letter-spacing:normal}
       .zrb-manual-editor button,.zrb-manual-editor select,.zrb-manual-editor input{font:inherit;max-width:100%;color:inherit}
       .zrb-manual-editor button{padding:5px 10px;cursor:pointer;border:1px solid #8887;border-radius:5px;background:Canvas;color:CanvasText}
@@ -25,12 +25,12 @@ var ZRBManualFigureEditor = {
       .zrb-manual-editor header,.zrb-manual-editor footer{padding:10px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
       .zrb-manual-editor header{border-bottom:1px solid #8884}.zrb-manual-editor header strong{flex:1}
       .zrb-manual-editor footer{border-top:1px solid #8884;justify-content:flex-end}
-      .zrb-manual-workspace{display:flex;min-height:0;flex:1}.zrb-manual-source{flex:1;min-width:200px;overflow:auto;background:#8882;padding:12px}
-      .zrb-manual-main-preview{display:none;flex:1;min-width:0;overflow:auto;background:#8882;padding:18px;align-content:start;justify-items:center;gap:14px}
+      .zrb-manual-workspace{display:flex;min-height:0;flex:1;overscroll-behavior:contain}.zrb-manual-source{flex:1;min-width:200px;overflow:auto;overscroll-behavior:contain;background:#8882;padding:12px}
+      .zrb-manual-main-preview{display:none;flex:1;min-width:0;overflow:auto;overscroll-behavior:contain;background:#8882;padding:18px;align-content:start;justify-items:center;gap:14px}
       .zrb-manual-main-preview img{display:block;max-width:100%;max-height:calc(100vh - 220px);height:auto;object-fit:contain;background:white;box-shadow:0 2px 8px #0002}
       .zrb-manual-editor[data-preview=true] .zrb-manual-source,.zrb-manual-editor[data-preview=true] .zrb-manual-sidebar{display:none}
       .zrb-manual-editor[data-preview=true] .zrb-manual-main-preview{display:grid}
-      .zrb-manual-sidebar{width:290px;max-width:42%;overflow:auto;padding:12px;border-left:1px solid #8884}
+      .zrb-manual-sidebar{width:290px;max-width:42%;overflow:auto;overscroll-behavior:contain;padding:12px;border-left:1px solid #8884}
       .zrb-manual-sidebar h3{font:bold 14px system-ui;margin:14px 0 8px}.zrb-manual-sidebar h3:first-child{margin-top:0}
       .zrb-crop-stage{position:relative;user-select:none;touch-action:none;margin:auto;background:white;box-shadow:0 2px 6px #0002;cursor:crosshair}
       .zrb-crop-stage>svg{display:block;width:100%;height:100%;pointer-events:none}
@@ -252,15 +252,23 @@ var ZRBManualFigureEditor = {
     const finishGesture = event => { gesture = null; if (stage.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId); renderScope(); };
     stage.addEventListener('pointerup', finishGesture); stage.addEventListener('pointercancel', finishGesture);
     const sourcePane = root.querySelector('.zrb-manual-source');
-    sourcePane.addEventListener('wheel', event => {
-      if (!event.ctrlKey) return;
-      event.preventDefault(); event.stopPropagation();
-      ui.zoom = Math.max(.5, Math.min(3, ui.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1)));
-      const zoom = find('zoom'), value = String(Number(ui.zoom.toFixed(3)));
-      let option = Array.from(zoom.options).find(item => item.value === value);
-      if (!option) { option = doc.createElement('option'); option.value = value; option.textContent = Math.round(ui.zoom * 100) + '%'; zoom.append(option); }
-      zoom.value = value; layoutPage();
-    }, { passive: false });
+    root.addEventListener('wheel', event => {
+      event.stopPropagation();
+      if (event.ctrlKey) {
+        event.preventDefault();
+        if (!sourcePane.contains(event.target)) return;
+        ui.zoom = Math.max(.5, Math.min(3, ui.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1)));
+        const zoom = find('zoom'), value = String(Number(ui.zoom.toFixed(3)));
+        let option = Array.from(zoom.options).find(item => item.value === value);
+        if (!option) { option = doc.createElement('option'); option.value = value; option.textContent = Math.round(ui.zoom * 100) + '%'; zoom.append(option); }
+        zoom.value = value; layoutPage(); return;
+      }
+      const pane = event.target?.closest?.('.zrb-manual-source,.zrb-manual-main-preview,.zrb-manual-sidebar');
+      const canScroll = (position, size, total, delta) => !delta || (total > size
+        && (delta < 0 ? position > 0 : position + size < total));
+      if (!pane || !canScroll(pane.scrollTop, pane.clientHeight, pane.scrollHeight, event.deltaY)
+        || !canScroll(pane.scrollLeft, pane.clientWidth, pane.scrollWidth, event.deltaX)) event.preventDefault();
+    }, { capture: true, passive: false });
     root.addEventListener('keydown', event => {
       event.stopPropagation();
       if (event.key === 'Escape') { event.preventDefault(); ui.close(); }

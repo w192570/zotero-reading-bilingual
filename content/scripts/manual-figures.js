@@ -535,7 +535,7 @@ var ZRBManualFigures = {
     state.controlHideTimer = setTimeout(() => {
       state.controlHideTimer = null;
       if (!state.control?.matches(':hover') && !state.hovered?.matches(':hover')) state.control.hidden = true;
-    }, 320);
+    }, 0);
   },
   openForElement(element) {
     const state = element?.ownerDocument && this.states.get(element.ownerDocument);
@@ -573,7 +573,17 @@ var ZRBManualFigures = {
       if (event.target.closest?.('.zrb-figure-edit-control')) { this.cancelControlHide(state); return; }
       if (event.target.closest?.('.zrb-figure-edit-inline')) return;
       const element = graphic(event.target);
-      if (!element) { if (!control.contains(event.target)) this.scheduleControlHide(state); return; }
+      if (!element) {
+        this.cancelControlHide(state);
+        control.hidden = true;
+        return;
+      }
+      const rect = this.graphicRect(element, event.target);
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) {
+        this.cancelControlHide(state);
+        control.hidden = true;
+        return;
+      }
       this.cancelControlHide(state);
       state.hovered = element; state.hoveredTarget = event.target; placeControl(element);
     };
@@ -598,11 +608,12 @@ var ZRBManualFigures = {
     const enlarge = element => {
       const overlay = doc.createElement('div'); overlay.className = 'zrb-image-lightbox';
       overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-label', '图片放大预览');
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483002;background:#000d;display:grid;place-items:center;padding:48px 20px 20px;cursor:default';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483002;box-sizing:border-box;background:#000d;display:grid;place-items:center;padding:48px 20px 20px;cursor:default;overscroll-behavior:contain';
       const toolbar = doc.createElement('div'); toolbar.style.cssText = 'position:absolute;right:16px;top:12px;display:flex;gap:8px;align-items:center;color:white;font:14px sans-serif';
       const zoomLabel = doc.createElement('span'); zoomLabel.setAttribute('aria-live', 'polite');
-      const content = doc.createElement('div'); content.style.cssText = 'width:94vw;height:90vh;overflow:auto;display:grid;place-items:center;cursor:grab';
-      const stack = doc.createElement('div'); stack.style.cssText = 'width:max-content;max-width:100%;height:max-content;display:grid;justify-items:center;align-content:center;gap:12px;margin:auto';
+      const content = doc.createElement('div'); content.className = 'zrb-image-lightbox-content';
+      content.style.cssText = 'width:94vw;height:90vh;overflow:auto;overscroll-behavior:contain;display:block;cursor:grab;touch-action:none;user-select:none';
+      const stack = doc.createElement('div'); stack.style.cssText = 'box-sizing:border-box;width:max-content;min-width:100%;height:max-content;min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;margin:auto';
       let media = [];
       if (element.matches?.('img,svg,canvas')) media = [element];
       else media = Array.from(element.querySelectorAll('img,svg,canvas'));
@@ -613,22 +624,31 @@ var ZRBManualFigures = {
         else node = source.cloneNode(true);
         const rect = source.getBoundingClientRect();
         if (!rect.width || !rect.height) continue;
-        const fit = Math.min(1, (doc.defaultView.innerWidth * .94) / rect.width, (doc.defaultView.innerHeight * .9) / rect.height);
-        const size = { width: rect.width * fit, height: rect.height * fit };
+        // The Reader can scale/transform its page. Measure its visible bounds,
+        // then render that size in this independent viewport without carrying
+        // the page's transform into the cloned media.
+        const size = { width: rect.width, height: rect.height };
         node.style?.setProperty('max-width', 'none', 'important'); node.style?.setProperty('max-height', 'none', 'important');
         node.style?.setProperty('width', size.width + 'px', 'important'); node.style?.setProperty('height', size.height + 'px', 'important');
         node.style?.setProperty('object-fit', 'contain', 'important');
         node.style?.setProperty('display', 'block', 'important'); node.style?.setProperty('position', 'static', 'important');
         node.style?.setProperty('float', 'none', 'important'); node.style?.setProperty('margin', '0 auto', 'important');
+        node.style?.setProperty('transform', 'none', 'important');
+        node.draggable = false;
         stack.append(node); scaled.push({ node, size });
       }
       if (!stack.childNodes.length) return;
       content.append(stack);
-      let zoom = 1;
+      let zoom = 1, fit = 1;
+      const baseZoom = 1;
       const updateZoom = value => {
+        const centerX = content.clientWidth ? (content.scrollLeft + content.clientWidth / 2) / content.scrollWidth : .5;
+        const centerY = content.clientHeight ? (content.scrollTop + content.clientHeight / 2) / content.scrollHeight : .5;
         zoom = Math.min(3, Math.max(.5, Math.round(value * 100) / 100));
         zoomLabel.textContent = Math.round(zoom * 100) + '%'; overlay.dataset.zoom = String(zoom);
-        for (const item of scaled) { item.node.style.setProperty('width', item.size.width * zoom + 'px', 'important'); item.node.style.setProperty('height', item.size.height * zoom + 'px', 'important'); }
+        for (const item of scaled) { item.node.style.setProperty('width', item.size.width * fit * zoom + 'px', 'important'); item.node.style.setProperty('height', item.size.height * fit * zoom + 'px', 'important'); }
+        content.scrollLeft = Math.max(0, centerX * content.scrollWidth - content.clientWidth / 2);
+        content.scrollTop = Math.max(0, centerY * content.scrollHeight - content.clientHeight / 2);
       };
       const button = (label, text, action) => {
         const b = doc.createElement('button'); b.type = 'button'; b.setAttribute('aria-label', label); b.textContent = text;
@@ -639,7 +659,11 @@ var ZRBManualFigures = {
       button('放大图片', '+', () => updateZoom(zoom + .25));
       button('适合窗口', '适合', () => updateZoom(1)); toolbar.append(zoomLabel);
       button('关闭图片预览', '关闭', () => close());
-      updateZoom(zoom); overlay.append(toolbar, content); doc.body.append(overlay);
+      overlay.append(toolbar, content); doc.body.append(overlay);
+      const maxWidth = Math.max(...scaled.map(item => item.size.width));
+      const totalHeight = scaled.reduce((sum, item) => sum + item.size.height, 0) + Math.max(0, scaled.length - 1) * 12;
+      fit = Math.min(1, content.clientWidth / maxWidth, content.clientHeight / totalHeight);
+      updateZoom(baseZoom);
       const close = () => { overlay.remove(); doc.removeEventListener('keydown', onKey, true); };
       const onKey = event => {
         if (event.key === 'Escape') close();
@@ -647,6 +671,26 @@ var ZRBManualFigures = {
         else if (event.key === '-') updateZoom(zoom - .25);
       };
       content.addEventListener('wheel', event => { event.preventDefault(); updateZoom(zoom + (event.deltaY < 0 ? .1 : -.1)); }, { passive: false });
+      let pan = null;
+      content.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || (content.scrollWidth <= content.clientWidth && content.scrollHeight <= content.clientHeight)) return;
+        event.preventDefault(); event.stopPropagation();
+        pan = { x: event.clientX, y: event.clientY, left: content.scrollLeft, top: content.scrollTop };
+        content.style.cursor = 'grabbing'; content.setPointerCapture?.(event.pointerId);
+      });
+      content.addEventListener('pointermove', event => {
+        if (!pan) return;
+        event.preventDefault();
+        content.scrollLeft = pan.left + pan.x - event.clientX;
+        content.scrollTop = pan.top + pan.y - event.clientY;
+      });
+      const endPan = event => {
+        if (!pan) return;
+        pan = null; content.style.cursor = 'grab';
+        if (content.hasPointerCapture?.(event.pointerId)) content.releasePointerCapture(event.pointerId);
+      };
+      content.addEventListener('pointerup', endPan);
+      content.addEventListener('pointercancel', endPan);
       content.addEventListener('click', event => event.stopPropagation());
       overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
       doc.addEventListener('keydown', onKey, true);
